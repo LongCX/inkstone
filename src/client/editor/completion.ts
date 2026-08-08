@@ -1,4 +1,5 @@
 import type { Completion, CompletionContext, CompletionResult } from '@codemirror/autocomplete';
+import { normalizeLinkKey } from '@shared/markdown-utils';
 import { truncateText } from '@shared/text-utils';
 import { fuzzyMatch } from '../lib/fuzzy';
 import { t } from "../lib/i18n";
@@ -23,9 +24,14 @@ export function wikiLinkSource(getSources: () => CompletionSources) {
             return null;
         const query = before.text.slice(2);
         const options: Completion[] = [];
+        const seenTitles = new Set<string>();
         for (const note of getSources().notes()) {
             if (!note.title)
                 continue;
+            const titleKey = normalizeLinkKey(note.title);
+            if (seenTitles.has(titleKey))
+                continue;
+            seenTitles.add(titleKey);
             const match = query ? fuzzyMatch(note.title, query) : { score: 0, ranges: [] };
             if (!match)
                 continue;
@@ -71,8 +77,6 @@ export function tagSource(getSources: () => CompletionSources) {
         const query = before.text.slice(hashIndex + 1);
         const line = context.state.doc.lineAt(context.pos);
         if (from - 1 === line.from && /^#{1,6}\s/.test(line.text))
-            return null;
-        if (!query && !context.explicit)
             return null;
         const options: Completion[] = [];
         for (const tag of getSources().tags()) {

@@ -1,4 +1,4 @@
-import type { AccentName, AppLocale, ProseFont, ProseWidth, ThemePref, UiDensity } from '@shared/types'
+import type { AccentName, AppLocale, BackgroundName, ProseFont, ProseWidth, ThemePref, UiDensity } from '@shared/types'
 import { Check, Monitor, Moon, Sun } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { Segmented, SettingRow, Slider } from '../../components/form'
@@ -77,6 +77,36 @@ export function AppearanceSettings({
                   )}
                 </button>
               </Tooltip>
+            ))}
+          </div>
+        </SettingRow>
+
+        <SettingRow title={t("settings.background_color")}>
+          <div role="group" aria-label={t("settings.background_color")} className="flex items-center gap-2">
+            {([
+              { name: 'paper', label: t("settings.background_paper"), swatch: '#f7f5f1' },
+              { name: 'white', label: t("settings.background_white"), swatch: '#ffffff' },
+            ] satisfies { name: BackgroundName; label: string; swatch: string }[]).map((background) => (
+              <button
+                key={background.name}
+                type="button"
+                onClick={() => void update({ appearance: { background: background.name } })}
+                aria-pressed={appearance.background === background.name}
+                className={cn(
+                  'flex h-8 min-w-[84px] items-center gap-2 rounded-[var(--r-md)] border px-2.5 text-[11.5px] transition-[border-color,background-color,box-shadow] duration-[var(--dur-fast)]',
+                  appearance.background === background.name
+                    ? 'border-[var(--accent)] bg-[var(--accent-softer)] shadow-[0_0_0_2px_var(--accent-ring)]'
+                    : 'border-[var(--border-default)] bg-[var(--bg-base)] hover:bg-[var(--bg-hover)]',
+                )}
+              >
+                <span
+                  aria-hidden="true"
+                  className="size-4 rounded-full border border-black/10 shadow-sm"
+                  style={{ background: background.swatch }}
+                />
+                <span>{background.label}</span>
+                {appearance.background === background.name && <Check size={11} className="ml-auto text-[var(--accent)]" />}
+              </button>
             ))}
           </div>
         </SettingRow>

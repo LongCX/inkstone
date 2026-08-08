@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en-US" data-theme="light" data-accent="cinnabar">
+<html lang="en-US" data-theme="light" data-accent="cinnabar" data-background="paper">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5" />
@@ -27,6 +27,7 @@
           var saved = raw ? JSON.parse(raw) : null
           var pref = (saved && saved.theme) || 'system'
           var accent = (saved && saved.accent) || 'cinnabar'
+          var background = saved && saved.background === 'white' ? 'white' : 'paper'
           var dark =
             pref === 'dark' ||
             (pref === 'system' &&
@@ -34,6 +35,7 @@
           var root = document.documentElement
           root.dataset.theme = dark ? 'dark' : 'light'
           root.dataset.accent = accent
+          root.dataset.background = background
           var storedLocale = localStorage.getItem('inkstone-locale')
           var locale =
             storedLocale === 'zh-CN' || storedLocale === 'en-US'
@@ -70,6 +72,7 @@
         transition: opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1);
       }
       html[data-theme='light'] #boot { background: #faf9f7; }
+      html[data-theme='light'][data-background='white'] #boot { background: #fff; }
       html[data-theme='dark'] #boot { background: #1a1817; }
       #boot.done { opacity: 0; pointer-events: none; }
       #boot svg { width: 34px; height: 34px; animation: bootPulse 1.5s ease-in-out infinite; }

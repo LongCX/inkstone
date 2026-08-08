@@ -2121,6 +2121,8 @@ async function replayOutboxNow(get: () => NotesState, set: SetNotesState): Promi
                     await settleSavedPatch(item.noteId, { content, writeId: item.writeId }, saved, set, get);
                 else
                     adoptNote(saved, set, get);
+                if (typeof title === 'string')
+                    void get().pull({ force: true });
                 await advanceDependentOutboxWrites(
                     item.noteId,
                     item.writeId,

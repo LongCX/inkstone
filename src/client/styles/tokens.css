@@ -164,6 +164,27 @@
 }
 
 
+:root[data-theme='light'][data-background='white'] {
+  --bg-sunken: #f7f7f8;
+  --bg-base: #ffffff;
+  --bg-editor: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-overlay: #ffffff;
+  --bg-inset: #f4f5f6;
+}
+
+:root[data-theme='dark'][data-background='white'] {
+  --bg-sunken: #0f1011;
+  --bg-base: #151617;
+  --bg-editor: #1b1c1e;
+  --bg-surface: #202123;
+  --bg-raised: #252629;
+  --bg-overlay: #292a2d;
+  --bg-inset: #111214;
+}
+
+
 :root[data-accent='cinnabar'][data-theme='dark'] { --accent: oklch(66.5% 0.15 32); --accent-hover: oklch(71% 0.145 32); }
 :root[data-accent='cinnabar'][data-theme='light'] { --accent: oklch(54% 0.15 30); --accent-hover: oklch(48.5% 0.155 30); }
 

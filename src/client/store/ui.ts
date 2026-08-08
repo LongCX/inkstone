@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AccentName, EditorLayout, SortKey, SortOrder, ThemePref, UiDensity, ViewKind } from '@shared/types'
+import type { AccentName, BackgroundName, EditorLayout, SortKey, SortOrder, ThemePref, UiDensity, ViewKind } from '@shared/types'
 import { ACCENTS, LIMITS, VIEW_KINDS } from '@shared/constants'
 import { truncateText } from '@shared/text-utils'
 import { UI_STORAGE_KEY } from '../lib/runtime'
@@ -68,6 +68,7 @@ interface UiState {
 
   theme: ThemePref
   accent: AccentName
+  background: BackgroundName
   fontScale: number
 
 
@@ -97,7 +98,7 @@ interface UiState {
   setLightbox: (value: UiState['lightbox']) => void
   toast: (input: Omit<ToastItem, 'id' | 'duration' | 'tone'> & { tone?: ToastItem['tone']; duration?: number }) => string
   dismissToast: (id: string) => void
-  applyAppearance: (patch: { theme?: ThemePref; accent?: AccentName; fontScale?: number }) => void
+  applyAppearance: (patch: { theme?: ThemePref; accent?: AccentName; background?: BackgroundName; fontScale?: number }) => void
 }
 
 export const PANEL_WIDTHS = {
@@ -131,6 +132,7 @@ const DEFAULTS = {
   recentNoteIds: [] as string[],
   theme: 'system' as ThemePref,
   accent: 'indigo' as AccentName,
+  background: 'paper' as BackgroundName,
   fontScale: 16,
 }
 
@@ -156,6 +158,7 @@ const PERSISTED_KEYS = [
   'recentNoteIds',
   'theme',
   'accent',
+  'background',
   'fontScale',
 ] as const
 
@@ -218,6 +221,9 @@ function loadPersisted(): Partial<UiState> {
     if (isChoice(value.theme, ['light', 'dark', 'system'])) out.theme = value.theme as ThemePref
     if (isChoice(value.accent, ACCENTS.map((accent) => accent.name))) {
       out.accent = value.accent as AccentName
+    }
+    if (isChoice(value.background, ['paper', 'white'])) {
+      out.background = value.background as BackgroundName
     }
     if (isFiniteNumber(value.fontScale)) out.fontScale = clamp(Math.round(value.fontScale), 13, 22)
     if (!out.workspaceSecondaryNoteId) {
@@ -478,13 +484,14 @@ export const useUi = create<UiState>((set, get) => ({
 lastPersisted = serializedPersistedState(useUi.getState())
 useUi.subscribe(persist)
 
-export function applyThemeToDom(state: Pick<UiState, 'theme' | 'accent' | 'fontScale'>): void {
+export function applyThemeToDom(state: Pick<UiState, 'theme' | 'accent' | 'background' | 'fontScale'>): void {
   const root = document.documentElement
   const dark =
     state.theme === 'dark' ||
     (state.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   root.dataset.theme = dark ? 'dark' : 'light'
   root.dataset.accent = state.accent
+  root.dataset.background = state.background
 }
 
 let themeTransitionTimer: number | undefined

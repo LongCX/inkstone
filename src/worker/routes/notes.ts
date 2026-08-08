@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { LIMITS } from '@shared/constants'
-import { countText, deriveExcerpt, extractTags } from '@shared/markdown-utils'
+import { countText, deriveExcerpt, extractTags, normalizeLinkKey, replaceWikiLinkTarget } from '@shared/markdown-utils'
 import { duplicateNoteTitle, sliceText, truncateText, utf8ByteLength } from '@shared/text-utils'
 import type {
   CreateNoteBody,
@@ -439,7 +439,29 @@ notesRoutes.patch('/:id', async (c) => {
     throw ApiError.conflict('This note was modified elsewhere', { server: current })
   }
   const changeResult = results.at(-1) as D1Result<{ seq: number }> | undefined
-  await broadcastCursor(c, changeResult?.results?.[0]?.seq)
+  let rewroteInbound = false
+  if (newTitle !== row.title) {
+    const duplicate = await c.env.DB.prepare(
+      `SELECT 1 AS found FROM notes
+        WHERE user_id = ?1 AND id <> ?2 AND deleted_at IS NULL AND title_key = ?3
+        LIMIT 1`,
+    ).bind(userId, id, normalizeLinkKey(newTitle)).first<{ found: number }>()
+    if (!duplicate) {
+      const rewrite = await rewriteInboundWikiLinks(
+        c.env.DB,
+        userId,
+        id,
+        row.title,
+        newTitle,
+        ftsEnabled,
+      )
+      if (rewrite.skipped) {
+        console.warn(`Could not update ${rewrite.skipped} wiki-link source notes after renaming note ${id}`)
+      }
+      rewroteInbound = rewrite.rewritten > 0
+    }
+  }
+  await broadcastCursor(c, rewroteInbound ? undefined : changeResult?.results?.[0]?.seq)
   if (contentChanged || newTitle !== row.title) {
     await enqueueNoteIndex(c.env.DB, userId, id, 'embed')
     scheduleFtsDrain(c)
@@ -864,6 +886,103 @@ function linkContext(content: string, title: string): string {
     sliceText(content, start, end).replace(/\s+/g, ' ').trim() +
     (end < content.length ? '…' : '')
   )
+}
+
+async function rewriteInboundWikiLinks(
+  db: D1Database,
+  userId: string,
+  targetNoteId: string,
+  fromTitle: string,
+  toTitle: string,
+  ftsEnabled: boolean,
+): Promise<{ rewritten: number; skipped: number }> {
+  const previousKey = normalizeLinkKey(fromTitle)
+  const { results: candidates } = await db.prepare(
+    `SELECT DISTINCT n.id FROM links l
+      JOIN notes n ON n.id = l.source_note_id AND n.user_id = l.user_id
+     WHERE l.user_id = ?1 AND l.target_note_id = ?2 AND l.target_key = ?3
+       AND n.id <> ?2 AND n.deleted_at IS NULL`,
+  ).bind(userId, targetNoteId, previousKey).all<{ id: string }>()
+  let rewritten = 0
+  let skipped = 0
+  for (const candidate of candidates) {
+    let complete = false
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const note = await db.prepare(
+        `SELECT id, title, content, content_hash, rev, updated_at, deleted_at
+           FROM notes WHERE id = ?1 AND user_id = ?2`,
+      ).bind(candidate.id, userId).first<{
+        id: string
+        title: string
+        content: string
+        content_hash: string
+        rev: number
+        updated_at: number
+        deleted_at: number | null
+      }>()
+      if (!note) {
+        complete = true
+        break
+      }
+      const content = replaceWikiLinkTarget(note.content, fromTitle, toTitle)
+      if (content === note.content) {
+        complete = true
+        break
+      }
+      const hash = await sha256Hex(content)
+      const { words, chars } = countText(content)
+      const now = Math.max(Date.now(), note.updated_at + 1)
+      const nextRev = note.rev + 1
+      const guard = `EXISTS (SELECT 1 FROM notes
+        WHERE id = ?1 AND user_id = ?2 AND rev = ?3
+          AND content_hash = ?4 AND title = ?5 AND updated_at = ?6)`
+      const guardValues = [note.id, userId, nextRev, hash, note.title, now] as const
+      const statements: D1PreparedStatement[] = [
+        db.prepare(
+          `UPDATE notes SET content = ?1, excerpt = ?2, word_count = ?3, char_count = ?4,
+             content_hash = ?5, rev = ?6, updated_at = ?7
+            WHERE id = ?8 AND user_id = ?9 AND rev = ?10 AND content_hash = ?11`,
+        ).bind(content, deriveExcerpt(content), words, chars, hash, nextRev, now,
+          note.id, userId, note.rev, note.content_hash),
+        db.prepare(
+          `INSERT INTO note_versions (id, note_id, user_id, title, content, size, created_at)
+           SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${shiftSqlPlaceholders(guard, 7)}`,
+        ).bind(newId(), note.id, userId, note.title, note.content,
+          utf8ByteLength(note.content), now, ...guardValues),
+        db.prepare(
+          `DELETE FROM note_versions WHERE note_id = ?1
+             AND ${shiftSqlPlaceholders(guard, 1)}
+             AND id NOT IN (SELECT id FROM note_versions WHERE note_id = ?1 ORDER BY created_at DESC LIMIT ?8)`,
+        ).bind(note.id, ...guardValues, LIMITS.versionsPerNote),
+      ]
+      statements.push(...buildNoteDerivedStatements({
+        db,
+        userId,
+        noteId: note.id,
+        title: note.title,
+        content,
+        ftsEnabled,
+        expectedRev: nextRev,
+        expectedContentHash: hash,
+        expectedTitle: note.title,
+        expectedUpdatedAt: now,
+      }).statements)
+      statements.push(
+        db.prepare(
+          `INSERT INTO changes (user_id, entity, entity_id, op, at)
+           SELECT ?1, 'note', ?2, 'upsert', ?3 WHERE ${shiftSqlPlaceholders(guard, 3)}`,
+        ).bind(userId, note.id, now, ...guardValues),
+      )
+      const [updated] = await db.batch(statements)
+      if (updated?.meta.changes) {
+        rewritten++
+        complete = true
+        break
+      }
+    }
+    if (!complete) skipped++
+  }
+  return { rewritten, skipped }
 }
 
 function sameTagSet(left: string[], right: string[]): boolean {

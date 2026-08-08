@@ -51,6 +51,7 @@ export interface UpdateCheckResponse {
 export type ThemePref = 'light' | 'dark' | 'system'
 export type AppLocale = 'zh-CN' | 'en-US'
 export type AccentName = 'cinnabar' | 'indigo' | 'celadon' | 'amber' | 'terracotta' | 'wisteria' | 'graphite'
+export type BackgroundName = 'paper' | 'white'
 export type UiDensity = 'comfortable' | 'compact'
 export type ProseFont = 'sans' | 'serif'
 export type ProseWidth = 'narrow' | 'normal' | 'wide' | 'full'
@@ -61,6 +62,7 @@ export interface AppearanceSettings {
   language: AppLocale
   theme: ThemePref
   accent: AccentName
+  background: BackgroundName
   density: UiDensity
   proseFont: ProseFont
   proseSize: number
@@ -265,8 +267,14 @@ export interface SearchResponse {
 export interface GraphNode {
   id: string
   title: string
+  kind: 'note' | 'unresolved'
   degree: number
+  inDegree: number
+  outDegree: number
   folderId: string | null
+  folderName: string | null
+  folderColor: string | null
+  tags: Array<{ name: string; color: string | null }>
 }
 
 export interface GraphEdge {
@@ -277,6 +285,27 @@ export interface GraphEdge {
 export interface GraphResponse {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  meta: {
+    mode: 'global' | 'local'
+    centerId: string | null
+    depth: number
+    totalNodes: number
+    totalEdges: number
+    truncated: boolean
+    limit: number
+  }
+}
+
+export interface GraphQuery {
+  mode?: 'global' | 'local'
+  center?: string
+  depth?: number
+  q?: string
+  folderId?: string
+  tag?: string
+  includeOrphans?: boolean
+  includeUnresolved?: boolean
+  limit?: number
 }
 
 

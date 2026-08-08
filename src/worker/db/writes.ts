@@ -218,11 +218,14 @@ export function buildNoteDerivedStatements(
     statements.push(
       db
         .prepare(
-          `UPDATE links SET target_note_id = ${LINK_TARGET_SUBQUERY}
+          `UPDATE links SET target_note_id = CASE
+               WHEN target_key = ?3 AND target_note_id = ?4 THEN ?4
+               ELSE ${LINK_TARGET_SUBQUERY}
+             END
              WHERE user_id = ?1 AND target_key IN (?2, ?3)
-               AND ${shiftPlaceholders(guard, 3)}`,
+               AND ${shiftPlaceholders(guard, 4)}`,
         )
-        .bind(userId, currentKey, previousKey, ...guardValues),
+        .bind(userId, currentKey, previousKey, noteId, ...guardValues),
     )
   }
 

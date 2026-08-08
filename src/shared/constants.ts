@@ -62,6 +62,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
     language: 'zh-CN',
     theme: 'system',
     accent: 'cinnabar',
+    background: 'paper',
     density: 'comfortable',
     proseFont: 'sans',
     proseSize: 16,
@@ -105,6 +106,7 @@ export const BACKUP_INTERVALS: Record<string, number> = {
 const THEMES = ['light', 'dark', 'system'] as const
 const LANGUAGES = ['zh-CN', 'en-US'] as const
 const ACCENT_NAMES = ACCENTS.map((accent) => accent.name)
+const BACKGROUND_NAMES = ['paper', 'white'] as const
 const DENSITIES = ['comfortable', 'compact'] as const
 const PROSE_FONTS = ['sans', 'serif'] as const
 const PROSE_WIDTHS = ['narrow', 'normal', 'wide', 'full'] as const
@@ -129,6 +131,11 @@ export function mergeSettings(partial: unknown): UserSettings {
     base.appearance.language,
   )
   base.appearance.accent = enumValue(appearance.accent, ACCENT_NAMES, base.appearance.accent)
+  base.appearance.background = enumValue(
+    appearance.background,
+    BACKGROUND_NAMES,
+    base.appearance.background,
+  )
   base.appearance.density = enumValue(
     appearance.density,
     DENSITIES,

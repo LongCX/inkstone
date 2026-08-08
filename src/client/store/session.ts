@@ -379,6 +379,7 @@ export function syncAppearanceToDom(settings: UserSettings): void {
   useUi.getState().applyAppearance({
     theme: appearance.theme,
     accent: appearance.accent,
+    background: appearance.background,
     fontScale: appearance.proseSize,
   })
   useUi.setState({ density: appearance.density })

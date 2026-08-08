@@ -4,12 +4,13 @@ import { useMemo } from 'react';
 import { countText, deriveExcerpt, extractTags, normalizeLinkKey, sortTagNames } from '@shared/markdown-utils';
 import { duplicateNoteTitle } from '@shared/text-utils';
 import { LIMITS } from '@shared/constants';
-import type { Folder, Note, NoteSummary, SortKey, SortOrder, SyncResponse, Tag, ViewKind, } from '@shared/types';
+import type { AppLocale, Folder, Note, NoteSummary, SortKey, SortOrder, SyncResponse, Tag, ViewKind, } from '@shared/types';
 import { api, ApiError, CLIENT_ID } from '../lib/api';
 import { localDb, publishBroadcast, type BroadcastPayload, type OutboxItem } from '../lib/db';
+import { folderDescendantIds } from '../lib/folders';
 import { useSession } from './session';
 import { useUi, type WorkspacePane } from './ui';
-import { t } from "../lib/i18n";
+import { getLocale, t, useLocale } from "../lib/i18n";
 export type SaveStatus = 'idle' | 'dirty' | 'saving' | 'synced' | 'offline';
 interface NotesState {
     notes: Record<string, NoteSummary>;
@@ -41,6 +42,7 @@ interface NotesState {
         title?: string;
         content?: string;
         folderId?: string | null;
+        isStarred?: boolean;
         open?: boolean;
     }) => Promise<string | null>;
     patchNote: (id: string, patch: Partial<Pick<NoteSummary, 'isPinned' | 'isStarred' | 'isArchived'>> & {
@@ -56,12 +58,14 @@ interface NotesState {
         name?: string;
         parentId?: string | null;
         icon?: string | null;
+        color?: string | null;
     }) => string | null;
     patchFolder: (id: string, patch: {
         name?: string;
         parentId?: string | null;
         beforeId?: string | null;
         icon?: string | null;
+        color?: string | null;
     }) => boolean;
     deleteFolder: (id: string) => boolean;
     refreshFolders: () => Promise<void>;
@@ -170,12 +174,12 @@ export const useNotes = create<NotesState>((set, get) => ({
                             const normalized = normalizeNoteSummaryTags(note);
                             return [normalized.id, normalized];
                         })),
-                        folders: cached.folders,
+                        folders: cached.folders.map(normalizeFolder),
                         tags: cached.tags,
                         cursor: cached.cursor,
                         hydrated: true,
                     });
-                    const initialId = pickInitialNoteId(get().notes);
+                    const initialId = pickInitialNoteId(get().notes, get().folders);
                     if (initialId)
                         await get().openNote(initialId);
                 }
@@ -207,7 +211,7 @@ export const useNotes = create<NotesState>((set, get) => ({
                 const targetId = (latestRequestedNoteId && notes[latestRequestedNoteId]
                     ? latestRequestedNoteId
                     : null) ??
-                    (activeId && notes[activeId] ? activeId : pickInitialNoteId(notes));
+                    (activeId && notes[activeId] ? activeId : pickInitialNoteId(notes, state.folders));
                 if (targetId) {
                     if (activeId !== targetId || !hasOwnContent(state.contents, targetId)) {
                         await get().openNote(targetId, { pane: activePane });
@@ -588,12 +592,15 @@ export const useNotes = create<NotesState>((set, get) => ({
         const content = input?.content ?? '';
         const title = (input?.title ?? '').trim().slice(0, LIMITS.titleMaxLength);
         const folderId = input?.folderId ?? currentFolderId();
+        const isStarred = input?.isStarred ?? false;
         if (existing) {
-            const request = api.notes.create({ id, title, content, folderId });
+            const request = api.notes.create({ id, title, content, folderId, ...(isStarred ? { isStarred: true } : {}) });
             pendingNoteCreates.set(id, request);
             try {
                 const note = await request;
                 adoptNote(note, set, get);
+                if (isStarred && !note.isStarred)
+                    await get().patchNote(note.id, { isStarred: true });
                 return note.id;
             }
             catch (err) {
@@ -615,7 +622,7 @@ export const useNotes = create<NotesState>((set, get) => ({
             folderId,
             tags: extractTags(content),
             isPinned: false,
-            isStarred: false,
+            isStarred,
             isArchived: false,
             wordCount: words,
             charCount: chars,
@@ -629,11 +636,13 @@ export const useNotes = create<NotesState>((set, get) => ({
         adoptNote(optimistic, set, get);
         if (input?.open !== false)
             useUi.getState().setActiveNote(id);
-        const request = api.notes.create({ id, title, content, folderId });
+        const request = api.notes.create({ id, title, content, folderId, ...(isStarred ? { isStarred: true } : {}) });
         pendingNoteCreates.set(id, request);
         try {
             const note = await request;
             adoptNote(note, set, get);
+            if (isStarred && !note.isStarred)
+                await get().patchNote(note.id, { isStarred: true });
             return note.id;
         }
         catch (err) {
@@ -956,13 +965,20 @@ export const useNotes = create<NotesState>((set, get) => ({
             parentId,
             name,
             icon: input?.icon ?? null,
+            color: input?.color ?? null,
             position: insertionPositionForFolders(current, id, parentId, null),
             createdAt: now,
             updatedAt: now,
             noteCount: 0,
         };
         const mutation = beginFolderMutation(id, false, (folders) => folders.some((item) => item.id === id) ? folders : [...folders, folder], set, get);
-        void enqueueFolderWrite(id, () => api.folders.create({ id, name, parentId, icon: folder.icon })).then((saved) => {
+        void enqueueFolderWrite(id, () => api.folders.create({
+            id,
+            name,
+            parentId,
+            icon: folder.icon,
+            ...(folder.color ? { color: folder.color } : {}),
+        })).then((saved) => {
             commitFolderMutation(mutation, saved, set, get);
         }).catch((err) => {
             rollbackFolderMutation(mutation, set, get);
@@ -1079,6 +1095,14 @@ export const useNotes = create<NotesState>((set, get) => ({
         }
     },
 }));
+
+type TagCacheState = Pick<NotesState, 'notes' | 'tags'>;
+
+export function setOptimisticTagCache(update: (state: NotesState) => Partial<TagCacheState>) {
+    tagStateGeneration++;
+    useNotes.setState((state) => update(state));
+}
+
 async function collectFullSync(first: SyncResponse): Promise<SyncResponse> {
     const notes = new Map(first.notes.map((note) => [note.id, note]));
     let page = first;
@@ -1359,6 +1383,7 @@ type FolderMutationPatch = {
     parentId?: string | null;
     beforeId?: string | null;
     icon?: string | null;
+    color?: string | null;
 };
 function applyOptimisticFolderPatch(folders: Folder[], id: string, patch: FolderMutationPatch): Folder[] {
     const current = folders.find((folder) => folder.id === id);
@@ -1370,6 +1395,7 @@ function applyOptimisticFolderPatch(folders: Folder[], id: string, patch: Folder
         ...current,
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.icon !== undefined ? { icon: patch.icon } : {}),
+        ...(patch.color !== undefined ? { color: patch.color } : {}),
         ...(patch.parentId !== undefined ? { parentId } : {}),
         ...(shouldPlace ? { position: insertionPositionForFolders(folders, id, parentId, patch.beforeId ?? null) } : {}),
         updatedAt: Math.max(Date.now(), current.updatedAt + 1),
@@ -2457,10 +2483,14 @@ function folderEqual(a: Folder, b: Folder): boolean {
         a.parentId === b.parentId &&
         a.name === b.name &&
         a.icon === b.icon &&
+        a.color === b.color &&
         a.position === b.position &&
         a.createdAt === b.createdAt &&
         a.updatedAt === b.updatedAt &&
         a.noteCount === b.noteCount);
+}
+function normalizeFolder(folder: Folder): Folder {
+    return folder.color === undefined ? { ...folder, color: null } : folder;
 }
 function reconcileFolderUi(folders: Folder[]): void {
     const validIds = new Set(folders.map((folder) => folder.id));
@@ -2481,6 +2511,23 @@ function tagEqual(a: Tag, b: Tag): boolean {
 function currentFolderId(): string | null {
     const ui = useUi.getState();
     return ui.view === 'folder' ? ui.folderId : null;
+}
+export function createContextualNote(input?: {
+    title?: string;
+    content?: string;
+    open?: boolean;
+}): Promise<string | null> {
+    const ui = useUi.getState();
+    if (ui.view === 'trash' || ui.view === 'archived') {
+        ui.openView('all');
+        return useNotes.getState().createNote(input);
+    }
+    return useNotes.getState().createNote({
+        ...input,
+        ...(ui.view === 'folder' ? { folderId: ui.folderId } : {}),
+        ...(ui.view === 'tag' && ui.tag && input?.content === undefined ? { content: `#${ui.tag}\n\n` } : {}),
+        ...(ui.view === 'starred' ? { isStarred: true } : {}),
+    });
 }
 function toastError(err: unknown, fallback: string): void {
     useUi.getState().toast({
@@ -2567,7 +2614,7 @@ function numberMapEqual(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, n
 export function useNavigationCounts(): NavigationCounts {
     return useNotes((state) => selectNavigationProjection(state.notes).counts);
 }
-function matchesView(note: NoteSummary, view: ViewKind, folderId: string | null, tag: string | null): boolean {
+function matchesView(note: NoteSummary, view: ViewKind, folderId: string | null, tag: string | null, folderScope?: ReadonlySet<string>): boolean {
     if (view === 'trash')
         return Boolean(note.deletedAt);
     if (note.deletedAt)
@@ -2582,7 +2629,7 @@ function matchesView(note: NoteSummary, view: ViewKind, folderId: string | null,
         case 'unfiled':
             return !note.folderId;
         case 'folder':
-            return note.folderId === folderId;
+            return Boolean(note.folderId && (folderScope?.has(note.folderId) ?? note.folderId === folderId));
         case 'tag':
             return Boolean(tag && note.tags.includes(tag));
         case 'recent':
@@ -2591,7 +2638,7 @@ function matchesView(note: NoteSummary, view: ViewKind, folderId: string | null,
             return true;
     }
 }
-function compare(a: NoteSummary, b: NoteSummary, sort: SortKey, order: SortOrder): number {
+function compare(a: NoteSummary, b: NoteSummary, sort: SortKey, order: SortOrder, locale: AppLocale): number {
     if (a.isPinned !== b.isPinned)
         return a.isPinned ? -1 : 1;
     const dir = order === 'asc' ? 1 : -1;
@@ -2601,7 +2648,7 @@ function compare(a: NoteSummary, b: NoteSummary, sort: SortKey, order: SortOrder
             result = (a.createdAt - b.createdAt) * dir;
             break;
         case 'title':
-            result = a.title.localeCompare(b.title, 'zh-CN') * dir;
+            result = a.title.localeCompare(b.title, locale, { numeric: true, sensitivity: 'base' }) * dir;
             break;
         case 'updated':
         default:
@@ -2610,40 +2657,53 @@ function compare(a: NoteSummary, b: NoteSummary, sort: SortKey, order: SortOrder
     }
     return result || a.id.localeCompare(b.id);
 }
-function pickInitialNoteId(notes: Record<string, NoteSummary>): string | null {
+function compareTrash(a: NoteSummary, b: NoteSummary): number {
+    return (b.deletedAt ?? b.updatedAt) - (a.deletedAt ?? a.updatedAt) || a.id.localeCompare(b.id);
+}
+function pickInitialNoteId(notes: Record<string, NoteSummary>, folders: Folder[]): string | null {
     const ui = useUi.getState();
+    const folderScope = ui.view === 'folder' && ui.folderId ? folderDescendantIds(folders, ui.folderId) : undefined;
     const active = ui.activeNoteId ? notes[ui.activeNoteId] : undefined;
-    if (active && matchesView(active, ui.view, ui.folderId, ui.tag))
+    if (active && matchesView(active, ui.view, ui.folderId, ui.tag, folderScope))
         return active.id;
-    const visible = Object.values(notes).filter((note) => matchesView(note, ui.view, ui.folderId, ui.tag));
+    const visible = Object.values(notes).filter((note) => matchesView(note, ui.view, ui.folderId, ui.tag, folderScope));
     if (ui.view === 'recent') {
         visible.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
     }
+    else if (ui.view === 'trash') {
+        visible.sort(compareTrash);
+    }
     else {
-        visible.sort((a, b) => compare(a, b, ui.sort, ui.order));
+        visible.sort((a, b) => compare(a, b, ui.sort, ui.order, getLocale()));
     }
     return visible[0]?.id ?? null;
 }
 export function useVisibleNotes(): NoteSummary[] {
+    const locale = useLocale();
     const notes = useNotes((s) => s.notes);
+    const folders = useNotes((s) => s.folders);
     const view = useUi((s) => s.view);
     const folderId = useUi((s) => s.folderId);
     const tag = useUi((s) => s.tag);
     const sort = useUi((s) => s.sort);
     const order = useUi((s) => s.order);
     return useMemo(() => {
-        const list = Object.values(notes).filter((n) => matchesView(n, view, folderId, tag));
+        const folderScope = view === 'folder' && folderId ? folderDescendantIds(folders, folderId) : undefined;
+        const list = Object.values(notes).filter((n) => matchesView(n, view, folderId, tag, folderScope));
         if (view === 'recent') {
             return list
                 .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
                 .slice(0, 60);
         }
-        return list.sort((a, b) => compare(a, b, sort, order));
-    }, [notes, view, folderId, tag, sort, order]);
+        if (view === 'trash')
+            return list.sort(compareTrash);
+        return list.sort((a, b) => compare(a, b, sort, order, locale));
+    }, [notes, folders, view, folderId, tag, sort, order, locale]);
 }
 export interface FolderNode extends Folder {
     children: FolderNode[];
     depth: number;
+    directNotes: number;
     totalNotes: number;
 }
 export function useFolderTree(): FolderNode[] {
@@ -2674,8 +2734,9 @@ export function buildFolderTree(folders: Folder[], direct: ReadonlyMap<string, n
                 return node ? [node] : [];
             })
             : [];
-        const totalNotes = (direct.get(folder.id) ?? 0) + children.reduce((sum, child) => sum + child.totalNotes, 0);
-        return { ...folder, parentId, children, depth, totalNotes };
+        const directNotes = direct.get(folder.id) ?? 0;
+        const totalNotes = directNotes + children.reduce((sum, child) => sum + child.totalNotes, 0);
+        return { ...folder, parentId, children, depth, directNotes, totalNotes };
     };
     const roots = folders
         .filter((folder) => folder.parentId === null || !byId.has(folder.parentId))

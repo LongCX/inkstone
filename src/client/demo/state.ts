@@ -136,7 +136,8 @@ export function listTags(state: DemoState): Tag[] {
     if (item.deletedAt !== null) continue
     for (const name of item.tags) counts.set(name, (counts.get(name) ?? 0) + 1)
   }
-  return sortTagNames(counts.keys()).map((name) => {
+  const names = new Set([...state.tagIds.keys(), ...counts.keys()])
+  return sortTagNames(names).map((name) => {
     let id = state.tagIds.get(name)
     if (!id) {
       id = newDemoId()

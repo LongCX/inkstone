@@ -96,7 +96,7 @@ export async function buildSnapshot(
         WHERE n.user_id = ?1 ORDER BY n.created_at ASC`,
     ).bind(userId),
     env.DB.prepare(
-      `SELECT f.id, f.parent_id, f.name, f.icon, f.position, f.created_at, f.updated_at
+      `SELECT f.id, f.parent_id, f.name, f.icon, f.color, f.position, f.created_at, f.updated_at
          FROM folders f WHERE f.user_id = ?1 AND f.deleted_at IS NULL ORDER BY f.position ASC`,
     ).bind(userId),
     env.DB.prepare(`SELECT t.id, t.name, t.color, t.created_at FROM tags t WHERE t.user_id = ?1`).bind(

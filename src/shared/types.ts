@@ -133,6 +133,7 @@ export interface Folder {
   parentId: string | null
   name: string
   icon: string | null
+  color: string | null
   position: number
   createdAt: number
   updatedAt: number
@@ -217,6 +218,7 @@ export interface CreateNoteBody {
   title?: string
   content?: string
   folderId?: string | null
+  isStarred?: boolean
 }
 
 export interface PatchNoteBody {

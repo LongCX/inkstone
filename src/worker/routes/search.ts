@@ -8,6 +8,7 @@ import { drainFtsQueue, hasPendingFtsWork, rebuildFtsIndex } from '../db/fts'
 import { NOTE_COLUMNS, toNoteSummary, type NoteRow } from '../db/rows'
 import { ApiError } from '../lib/errors'
 import { clampInt } from '../lib/request'
+import { scheduleFtsDrain } from '../lib/notify'
 import { requireAuth } from '../middleware/auth'
 
 export const searchRoutes = new Hono<AppBindings>()
@@ -114,6 +115,7 @@ export async function searchUserNotes(
   raw: string,
   limit: number,
   ftsEnabled: boolean,
+  drain = true,
 ): Promise<UserSearchResult> {
   const query = parseQuery(truncateText(raw.trim(), 512))
   if (!raw.trim()) return { results: [], mode: ftsEnabled ? 'fts' : 'like', query }
@@ -121,7 +123,7 @@ export async function searchUserNotes(
   let useFts = ftsEnabled
   if (useFts) {
     try {
-      await drainFtsQueue(db, userId, 50, true)
+      if (drain) await drainFtsQueue(db, userId, 50, true)
       useFts = !(await hasPendingFtsWork(db, userId))
     } catch {
       useFts = false
@@ -171,7 +173,8 @@ searchRoutes.get('/search', requireAuth, async (c) => {
   }
 
   const { ftsEnabled } = c.get('database')
-  const result = await searchUserNotes(c.env.DB, userId, raw, limit, ftsEnabled)
+  scheduleFtsDrain(c, 50)
+  const result = await searchUserNotes(c.env.DB, userId, raw, limit, ftsEnabled, false)
   const q = result.query
 
   const body: SearchResponse = {

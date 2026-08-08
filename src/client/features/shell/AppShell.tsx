@@ -6,7 +6,7 @@ import { useBreakpoint } from '../../lib/hooks';
 import { useSyncEngine } from '../../lib/sync';
 import { Drawer } from '../../components/overlay';
 import { PANEL_WIDTHS, useUi } from '../../store/ui';
-import { useNotes } from '../../store/notes';
+import { createContextualNote, useNotes } from '../../store/notes';
 import { useSession } from '../../store/session';
 import { useUpdate } from '../../store/update';
 import { Sidebar } from '../sidebar/Sidebar';
@@ -210,7 +210,7 @@ function useGlobalHotkeys(): void {
                 description: () => t("common.new_note"),
                 group: () => t("shell.global"),
                 allowInInput: true,
-                handler: () => void notes().createNote(),
+                handler: () => void createContextualNote(),
             },
             {
                 id: 'search',

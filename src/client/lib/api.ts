@@ -262,7 +262,7 @@ export const api = {
     list: (params: Record<string, string | number | undefined>) =>
       request<ListNotesResponse>(`/api/notes${toQuery(params)}`),
     get: (id: string) => request<Note>(`/api/notes/${id}`),
-    create: (body: { id?: string; content?: string; title?: string; folderId?: string | null }) =>
+    create: (body: { id?: string; content?: string; title?: string; folderId?: string | null; isStarred?: boolean }) =>
       request<Note>('/api/notes', { method: 'POST', body, timeoutMs: 30_000 }),
     patch: (id: string, body: PatchNoteBody) =>
       request<Note>(`/api/notes/${id}`, { method: 'PATCH', body, timeoutMs: 30_000 }),
@@ -282,13 +282,14 @@ export const api = {
 
   folders: {
     list: () => request<{ folders: Folder[] }>('/api/folders'),
-    create: (body: { id?: string; name?: string; parentId?: string | null; icon?: string | null }) =>
+    create: (body: { id?: string; name?: string; parentId?: string | null; icon?: string | null; color?: string | null }) =>
       request<Folder>('/api/folders', { method: 'POST', body }),
     patch: (id: string, body: {
       name?: string
       parentId?: string | null
       beforeId?: string | null
       icon?: string | null
+      color?: string | null
     }) =>
       request<Folder>(`/api/folders/${id}`, { method: 'PATCH', body }),
     remove: (id: string, strategy: 'move-up' | 'delete' = 'move-up') =>
@@ -297,6 +298,8 @@ export const api = {
 
   tags: {
     list: () => request<{ tags: Tag[] }>('/api/tags'),
+    create: (body: { id?: string; name: string; color?: string | null }) =>
+      request<Tag>('/api/tags', { method: 'POST', body }),
     patch: (id: string, body: { name?: string; color?: string | null }) =>
       request<Tag | { ok: true; renamed: number }>(`/api/tags/${id}`, { method: 'PATCH', body }),
     remove: (id: string) =>

@@ -11,7 +11,8 @@ import { shortTime } from '../../lib/time';
 import { IconButton, Kbd } from '../../components/primitives';
 import { Tooltip, useDialogFocus, useEscape, useLockScroll } from '../../components/overlay';
 import { useUi } from '../../store/ui';
-import { useNotes } from '../../store/notes';
+import { createContextualNote, useNotes } from '../../store/notes';
+import { folderPathLabel, openFolderView } from '../../lib/folders';
 import { useSession } from '../../store/session';
 import { t, useLocale } from "../../lib/i18n";
 interface Item {
@@ -45,7 +46,6 @@ export function CommandPalette({ onClose }: {
     const tags = useNotes((s) => s.tags);
     const folders = useNotes((s) => s.folders);
     const openNote = useNotes((s) => s.openNote);
-    const createNote = useNotes((s) => s.createNote);
     const createFolder = useNotes((s) => s.createFolder);
     const deleteNote = useNotes((s) => s.deleteNote);
     const patchNote = useNotes((s) => s.patchNote);
@@ -95,7 +95,7 @@ export function CommandPalette({ onClose }: {
                 icon: <Plus size={14}/>,
                 combo: 'mod+n',
                 group: t("command.commands"),
-                run: () => void createNote(),
+                run: () => void createContextualNote(),
             },
             {
                 id: 'cmd-new-folder',
@@ -246,7 +246,6 @@ export function CommandPalette({ onClose }: {
         activeNoteId,
         appearanceTheme,
         locale,
-        createNote,
         createFolder,
         deleteNote,
         notes,
@@ -311,26 +310,34 @@ export function CommandPalette({ onClose }: {
             kind: 'tag',
             label: `#${item.name}`,
             detail: t("common.value0_notes", { value0: item.count }),
-            icon: <Hash size={14}/>,
+            icon: <Hash size={14} style={{ color: item.color ?? undefined }}/>,
             group: t("navigation.tag"),
             score: match.score,
             run: () => openView('tag', { tag: item.name }),
         }));
         const folderCounts = new Map<string, number>();
+        const folderById = new Map(folders.map((folder) => [folder.id, folder]));
         for (const note of Object.values(notes)) {
             if (!note.folderId || note.deletedAt || note.isArchived)
                 continue;
-            folderCounts.set(note.folderId, (folderCounts.get(note.folderId) ?? 0) + 1);
+            let currentId: string | null = note.folderId;
+            const seenFolders = new Set<string>();
+            while (currentId && !seenFolders.has(currentId)) {
+                seenFolders.add(currentId);
+                folderCounts.set(currentId, (folderCounts.get(currentId) ?? 0) + 1);
+                currentId = folderById.get(currentId)?.parentId ?? null;
+            }
         }
-        const matchedFolders = fuzzyFilter(folders, text, (f) => f.name, 5).map<Item>(({ item, match }) => ({
-            id: `folder-${item.id}`,
+        const folderChoices = folders.map((folder) => ({ folder, path: folderPathLabel(folders, folder.id) }));
+        const matchedFolders = fuzzyFilter(folderChoices, text, (choice) => choice.path, 5).map<Item>(({ item: choice, match }) => ({
+            id: `folder-${choice.folder.id}`,
             kind: 'folder',
-            label: item.name,
-            detail: t("common.value0_notes", { value0: folderCounts.get(item.id) ?? 0 }),
+            label: choice.path,
+            detail: t("common.value0_notes", { value0: folderCounts.get(choice.folder.id) ?? 0 }),
             icon: <FolderPlus size={14}/>,
             group: t("navigation.folder"),
             score: match.score,
-            run: () => openView('folder', { folderId: item.id }),
+            run: () => openFolderView(folders, choice.folder.id),
         }));
         const all = [...matchedCommands, ...matchedNotes, ...fullText, ...matchedTags, ...matchedFolders];
         if (!all.length) {
@@ -341,7 +348,7 @@ export function CommandPalette({ onClose }: {
                 icon: <Plus size={14}/>,
                 group: t("command.commands"),
                 score: 0,
-                run: () => void createNote({ title: text }),
+                run: () => void createContextualNote({ title: text }),
             });
         }
         return all.sort((a, b) => b.score - a.score).slice(0, 40);
@@ -355,7 +362,6 @@ export function CommandPalette({ onClose }: {
         remote,
         recentNoteIds,
         openNote,
-        createNote,
         openView,
         now,
     ]);

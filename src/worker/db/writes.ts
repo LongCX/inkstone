@@ -131,7 +131,11 @@ export function buildNoteDerivedStatements(
         `INSERT INTO tags (id, user_id, name, color, created_at)
          SELECT json_extract(j.value, '$.id'), ?1, json_extract(j.value, '$.name'), NULL, ?2
            FROM json_each(?3) AS j
+           LEFT JOIN tags existing
+             ON existing.user_id = ?1
+            AND existing.name = json_extract(j.value, '$.name') COLLATE NOCASE
           WHERE ${shiftPlaceholders(guard, 3)}
+            AND existing.id IS NULL
          ON CONFLICT(user_id, name) DO NOTHING`,
       )
       .bind(userId, now, tagRows, ...guardValues),
@@ -143,11 +147,22 @@ export function buildNoteDerivedStatements(
       .bind(noteId, ...guardValues),
     db
       .prepare(
-        `INSERT INTO note_tags (note_id, tag_id)
-         SELECT ?1, t.id
-           FROM tags t JOIN json_each(?2) AS j
-             ON t.name = json_extract(j.value, '$.name')
-          WHERE t.user_id = ?3 AND ${shiftPlaceholders(guard, 3)}
+        `WITH ranked_tags AS (
+           SELECT candidate.id,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY json_extract(j.value, '$.name')
+                    ORDER BY CASE WHEN candidate.name = json_extract(j.value, '$.name') THEN 0 ELSE 1 END,
+                             candidate.created_at ASC,
+                             candidate.id ASC
+                  ) AS rank
+             FROM json_each(?2) AS j
+             JOIN tags candidate
+               ON candidate.user_id = ?3
+              AND candidate.name = json_extract(j.value, '$.name') COLLATE NOCASE
+         )
+         INSERT INTO note_tags (note_id, tag_id)
+         SELECT ?1, id FROM ranked_tags
+          WHERE rank = 1 AND ${shiftPlaceholders(guard, 3)}
          ON CONFLICT DO NOTHING`,
       )
       .bind(noteId, tagRows, userId, ...guardValues),
@@ -221,7 +236,9 @@ function shiftPlaceholders(sql: string, offset: number): string {
 export async function pruneOrphanTags(db: D1Database, userId: string): Promise<void> {
   await db
     .prepare(
-      `DELETE FROM tags WHERE user_id = ?1 AND id NOT IN (SELECT tag_id FROM note_tags)`,
+      `DELETE FROM tags
+        WHERE user_id = ?1 AND is_manual = 0
+          AND id NOT IN (SELECT tag_id FROM note_tags)`,
     )
     .bind(userId)
     .run()

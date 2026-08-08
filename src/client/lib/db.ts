@@ -1,7 +1,14 @@
 import { clear as clearStore, createStore, del, get, getMany, set, setMany, update } from 'idb-keyval'
+import * as idbKeyval from 'idb-keyval'
+import type { UseStore } from 'idb-keyval'
 import type { Folder, Note, NoteSummary, PublicUser, SessionInfo, SiteInfo, Tag } from '@shared/types'
 import { CLIENT_DATABASE_NAME } from './runtime'
 
+const optionalIdbExport = (name: string): unknown => Object.prototype.hasOwnProperty.call(idbKeyval, name)
+  ? Reflect.get(idbKeyval, name)
+  : undefined
+const delMany = optionalIdbExport('delMany') as ((keys: IDBValidKey[], store?: UseStore) => Promise<void>) | undefined
+const entries = optionalIdbExport('entries') as (<KeyType extends IDBValidKey, ValueType = unknown>(store?: UseStore) => Promise<[KeyType, ValueType][]>) | undefined
 
 const store = createStore(CLIENT_DATABASE_NAME, 'kv')
 
@@ -26,6 +33,9 @@ interface ShellData {
 
 let shellSaveTimer = 0
 let pendingShell: ShellData | null = null
+let pendingShellUserId: string | null = null
+let activeUserId: string | null = null
+const supportsUserNamespaces = typeof entries === 'function' && typeof delMany === 'function'
 
 export interface OutboxItem {
   id: string
@@ -82,6 +92,47 @@ async function safeSet(key: string, value: unknown): Promise<void> {
   }
 }
 
+function userScopedKey(key: string, userId = activeUserId): string {
+  return userId && supportsUserNamespaces ? `user:${userId}:${key}` : key
+}
+
+function isLegacyDataKey(key: unknown): key is string {
+  return key === KEY.notes || key === KEY.folders || key === KEY.tags || key === KEY.cursor ||
+    key === KEY.outbox || key === KEY.outboxReplayLease || (typeof key === 'string' && key.startsWith('note:'))
+}
+
+async function migrateLegacyData(userId: string): Promise<void> {
+  if (!supportsUserNamespaces) return
+  const legacy = (await entries<string, unknown>(store)).filter(([key]) => isLegacyDataKey(key))
+  if (!legacy.length) return
+  const scopedKeys = await getMany(legacy.map(([key]) => userScopedKey(key, userId)), store)
+  const writes: [string, unknown][] = []
+  for (let index = 0; index < legacy.length; index++) {
+    if (scopedKeys[index] === undefined) {
+      writes.push([userScopedKey(legacy[index]![0], userId), legacy[index]![1]])
+    }
+  }
+  if (writes.length) await setMany(writes, store)
+  await delMany(legacy.map(([key]) => key), store)
+}
+
+async function bindLocalUser(userId: string): Promise<void> {
+  if (activeUserId === userId) {
+    await set(KEY.userId, userId, store)
+    return
+  }
+  if (!supportsUserNamespaces) {
+    await clearLocalData()
+    activeUserId = userId
+    await set(KEY.userId, userId, store)
+    return
+  }
+  activeUserId = userId
+  const legacyUserId = await safeGet<string>(KEY.userId)
+  if (legacyUserId === userId) await migrateLegacyData(userId)
+  await set(KEY.userId, userId, store)
+}
+
 export const localDb = {
   async loadSession(): Promise<SessionInfo | null> {
     const value = await safeGet<unknown>(KEY.session)
@@ -94,10 +145,7 @@ export const localDb = {
   async saveSession(info: SessionInfo): Promise<void> {
     if (!info.user) return
     try {
-      if ((await safeGet<string>(KEY.userId)) !== info.user.id) {
-        await clearLocalData()
-        await set(KEY.userId, info.user.id, store)
-      }
+      await bindLocalUser(info.user.id)
       await set(KEY.session, info, store)
     } catch {
     }
@@ -111,7 +159,7 @@ export const localDb = {
     tags: Tag[]
     cursor: number
   } | null> {
-    const shellKeys = [KEY.notes, KEY.folders, KEY.tags, KEY.cursor]
+    const shellKeys = [KEY.notes, KEY.folders, KEY.tags, KEY.cursor].map((key) => userScopedKey(key))
     try {
       const values = await getMany(shellKeys, store)
       const [notes, folders, tags, cursor] = values as [
@@ -139,14 +187,14 @@ export const localDb = {
     }
   },
 
-  async saveShell(data: ShellData) {
+  async saveShell(data: ShellData, userId = activeUserId) {
     try {
       await setMany(
         [
-          [KEY.notes, data.notes],
-          [KEY.folders, data.folders],
-          [KEY.tags, data.tags],
-          [KEY.cursor, data.cursor],
+          [userScopedKey(KEY.notes, userId), data.notes],
+          [userScopedKey(KEY.folders, userId), data.folders],
+          [userScopedKey(KEY.tags, userId), data.tags],
+          [userScopedKey(KEY.cursor, userId), data.cursor],
         ],
         store,
       )
@@ -156,16 +204,19 @@ export const localDb = {
 
   scheduleShellSave(data: ShellData) {
     pendingShell = data
+    pendingShellUserId = activeUserId
     window.clearTimeout(shellSaveTimer)
     shellSaveTimer = window.setTimeout(() => {
       const snapshot = pendingShell
+      const userId = pendingShellUserId
       pendingShell = null
-      if (snapshot) void localDb.saveShell(snapshot)
+      pendingShellUserId = null
+      if (snapshot) void localDb.saveShell(snapshot, userId)
     }, 80)
   },
 
   async getContent(id: string): Promise<CachedNoteContent | undefined> {
-    const value = await safeGet<unknown>(KEY.content(id))
+    const value = await safeGet<unknown>(userScopedKey(KEY.content(id)))
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
     const cached = value as Partial<CachedNoteContent>
     if (
@@ -183,14 +234,14 @@ export const localDb = {
     return cached as CachedNoteContent
   },
   setContent: (id: string, value: CachedNoteContent) =>
-    safeSet(KEY.content(id), value),
-  dropContent: (id: string) => del(KEY.content(id), store).catch(() => {}),
+    safeSet(userScopedKey(KEY.content(id)), value),
+  dropContent: (id: string) => del(userScopedKey(KEY.content(id)), store).catch(() => {}),
 
-  getOutbox: async (): Promise<OutboxItem[]> => normalizeOutbox(await safeGet<unknown>(KEY.outbox)),
+  getOutbox: async (): Promise<OutboxItem[]> => normalizeOutbox(await safeGet<unknown>(userScopedKey(KEY.outbox))),
 
   enqueueOutbox(item: OutboxItem): Promise<void> {
     return update<OutboxItem[]>(
-      KEY.outbox,
+      userScopedKey(KEY.outbox),
       (current) => {
         const items = normalizeOutbox(current)
         const previous = items.find((entry) => entry.id === item.id)
@@ -205,7 +256,7 @@ export const localDb = {
 
   completeOutboxItem(id: string, writeId: string): Promise<void> {
     return update<OutboxItem[]>(
-      KEY.outbox,
+      userScopedKey(KEY.outbox),
       (current) => normalizeOutbox(current)
         .filter((item) => item.id !== id || item.writeId !== writeId),
       store,
@@ -219,7 +270,7 @@ export const localDb = {
     preserveVersion = false,
   ): Promise<void> {
     return update<OutboxItem[]>(
-      KEY.outbox,
+      userScopedKey(KEY.outbox),
       (current) => normalizeOutbox(current)
         .map((item) => item.id === id && item.writeId === writeId
           ? {
@@ -238,7 +289,7 @@ export const localDb = {
 
   setOutboxRecoveryId(id: string, writeId: string, recoveryId: string): Promise<void> {
     return update<OutboxItem[]>(
-      KEY.outbox,
+      userScopedKey(KEY.outbox),
       (current) => normalizeOutbox(current)
         .map((item) => item.id === id && item.writeId === writeId
           ? { ...item, payload: { ...item.payload, recoveryId } }
@@ -254,7 +305,7 @@ export const localDb = {
     nextRev: number,
   ): Promise<void> {
     return update<OutboxItem[]>(
-      KEY.outbox,
+      userScopedKey(KEY.outbox),
       (current) => normalizeOutbox(current)
         .map((item) => item.noteId === noteId &&
             item.dependsOnWriteId === sourceWriteId &&
@@ -267,7 +318,7 @@ export const localDb = {
 
   markOutboxFailure(id: string, writeId: string, message: string): Promise<void> {
     return update<OutboxItem[]>(
-      KEY.outbox,
+      userScopedKey(KEY.outbox),
       (current) => normalizeOutbox(current)
         .map((item) => item.id === id && item.writeId === writeId
           ? { ...item, attempts: item.attempts + 1, lastError: message }
@@ -277,10 +328,11 @@ export const localDb = {
   },
 
   async withOutboxReplayLock(owner: string, task: () => Promise<void>): Promise<boolean> {
+    const lockName = activeUserId ? `inkstone-outbox-replay:${activeUserId}` : 'inkstone-outbox-replay'
     if (typeof navigator !== 'undefined' && navigator.locks?.request) {
       let acquired = false
       await navigator.locks.request(
-        'inkstone-outbox-replay',
+        lockName,
         async () => {
           acquired = true
           await task()
@@ -295,7 +347,7 @@ export const localDb = {
     while (!acquired && Date.now() < deadline) {
       const now = Date.now()
       await update<{ owner: string; expiresAt: number } | null>(
-        KEY.outboxReplayLease,
+        userScopedKey(KEY.outboxReplayLease),
         (current) => {
           if (!current || current.expiresAt <= now) {
             acquired = true
@@ -313,7 +365,7 @@ export const localDb = {
 
     const heartbeat = globalThis.setInterval(() => {
       void update<{ owner: string; expiresAt: number } | null>(
-        KEY.outboxReplayLease,
+        userScopedKey(KEY.outboxReplayLease),
         (current) => current?.owner === owner
           ? { owner, expiresAt: Date.now() + leaseMs }
           : current ?? null,
@@ -326,7 +378,7 @@ export const localDb = {
     } finally {
       globalThis.clearInterval(heartbeat)
       await update<{ owner: string; expiresAt: number } | null>(
-        KEY.outboxReplayLease,
+        userScopedKey(KEY.outboxReplayLease),
         (current) => current?.owner === owner ? null : current ?? null,
         store,
       ).catch(() => {})
@@ -334,14 +386,13 @@ export const localDb = {
   },
 
   async bindUser(userId: string): Promise<void> {
-    if ((await safeGet<string>(KEY.userId)) === userId) return
-    await clearLocalData()
-    await set(KEY.userId, userId, store)
+    await bindLocalUser(userId)
   },
 
   async clear(): Promise<void> {
     try {
       await clearLocalData()
+      activeUserId = null
     } catch {
     }
   },
@@ -351,6 +402,7 @@ async function clearLocalData(): Promise<void> {
   window.clearTimeout(shellSaveTimer)
   shellSaveTimer = 0
   pendingShell = null
+  pendingShellUserId = null
   await clearStore(store)
 }
 
@@ -418,6 +470,7 @@ function isFolder(value: unknown): value is Folder {
     isNullableString(value.parentId) &&
     typeof value.name === 'string' &&
     isNullableString(value.icon) &&
+    (value.color === undefined || isNullableString(value.color)) &&
     isFiniteNumber(value.position) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
@@ -433,7 +486,7 @@ function isTag(value: unknown): value is Tag {
     isFiniteNumber(value.createdAt)
 }
 
-export type BroadcastPayload =
+export type BroadcastPayload = (
   | { type: 'local-write'; clientId: string }
   | { type: 'pulled'; cursor: number; clientId: string }
   | { type: 'claim-leader'; clientId: string; at: number }
@@ -461,6 +514,7 @@ export type BroadcastPayload =
       savedNote?: Note
       copyId?: string
     }
+) & { userId?: string }
 
 let broadcastPublisher: BroadcastChannel | null = null
 
@@ -468,7 +522,7 @@ export function publishBroadcast(payload: BroadcastPayload): void {
   if (typeof BroadcastChannel === 'undefined') return
   try {
     broadcastPublisher ??= new BroadcastChannel('inkstone')
-    broadcastPublisher.postMessage(payload)
+    broadcastPublisher.postMessage({ ...payload, userId: activeUserId })
   } catch {
   }
 }
@@ -480,11 +534,15 @@ export function createBroadcast(
     return { post: () => {}, close: () => {} }
   }
   const channel = new BroadcastChannel('inkstone')
-  channel.onmessage = (event) => onMessage(event.data as BroadcastPayload)
+  channel.onmessage = (event) => {
+    const payload = event.data as BroadcastPayload
+    if (payload?.userId && payload.userId !== activeUserId) return
+    onMessage(payload)
+  }
   return {
     post: (payload) => {
       try {
-        channel.postMessage(payload)
+        channel.postMessage({ ...payload, userId: activeUserId })
       } catch {
       }
     },

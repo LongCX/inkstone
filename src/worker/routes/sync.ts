@@ -13,7 +13,7 @@ export const CHANGE_BOUNDS_SQL = `SELECT
   (SELECT seq FROM changes WHERE user_id = ?1 ORDER BY seq ASC LIMIT 1) AS lo,
   (SELECT seq FROM changes WHERE user_id = ?1 ORDER BY seq DESC LIMIT 1) AS hi`
 
-const FOLDER_SELECT = `f.id, f.parent_id, f.name, f.icon, f.position, f.created_at, f.updated_at`
+const FOLDER_SELECT = `f.id, f.parent_id, f.name, f.icon, f.color, f.position, f.created_at, f.updated_at`
 
 const TAG_SELECT = `t.id, t.name, t.color, t.created_at,
   COALESCE(nc.count, 0) AS note_count`

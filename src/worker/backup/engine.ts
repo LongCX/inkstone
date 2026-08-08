@@ -67,7 +67,9 @@ function safeParse(raw: string): S3Config & WebdavConfig {
   }
 }
 
-const TARGET_TIMEOUT_MS = 60_000
+const TARGET_TIMEOUT_MS = 5 * 60_000
+const BACKUP_LEASE_TTL_MS = 30 * 60_000
+const BACKUP_LEASE_RENEW_MS = 5 * 60_000
 const TEST_TIMEOUT_MS = 20_000
 
 export interface RunOptions {
@@ -80,13 +82,21 @@ export async function runBackup(env: Env, userId: string, options: RunOptions): 
   const release = await acquireLease(
     env.DB,
     `snapshot_lock:${userId}`,
-    15 * 60 * 1000,
+    BACKUP_LEASE_TTL_MS,
     'A backup or export is already running. Try again later',
   )
 
+  const heartbeat = setInterval(() => {
+    void release.renew().then((ok) => {
+      if (!ok) console.error(`[inkstone] Backup lease was lost for ${userId}`)
+    }).catch((error) => {
+      console.warn('[inkstone] Backup lease renewal failed:', error instanceof Error ? error.message : error)
+    })
+  }, BACKUP_LEASE_RENEW_MS)
   try {
     return await runBackupUnlocked(env, userId, options)
   } finally {
+    clearInterval(heartbeat)
     await release()
   }
 }

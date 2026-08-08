@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { APP_VERSION, LIMITS, mergeSettingsPatch } from '@shared/constants'
 import { duplicateNoteTitle } from '@shared/text-utils'
+import { organizerColorOrNull } from '@shared/organizer-colors'
 import {
   deriveExcerpt,
   deriveTitle,
@@ -167,7 +168,7 @@ export function createDemoBackend(): DemoBackend {
       folderId: typeof body.folderId === 'string' && state.folders.has(body.folderId) ? body.folderId : null,
       tags: [],
       isPinned: false,
-      isStarred: false,
+      isStarred: body.isStarred === true,
       isArchived: false,
       wordCount: 0,
       charCount: 0,
@@ -322,6 +323,7 @@ export function createDemoBackend(): DemoBackend {
       parentId,
       name,
       icon: typeof body.icon === 'string' ? body.icon : null,
+      color: organizerColorOrNull(body.color),
       position: (siblings.at(-1)?.position ?? 0) + 1000,
       createdAt: now,
       updatedAt: now,
@@ -361,6 +363,7 @@ export function createDemoBackend(): DemoBackend {
       name,
       parentId,
       icon: body.icon === null || typeof body.icon === 'string' ? body.icon : current.icon,
+      color: 'color' in body ? organizerColorOrNull(body.color) : current.color,
       updatedAt: Date.now(),
     }
     const shouldPlace = 'beforeId' in body || parentId !== current.parentId
@@ -416,12 +419,33 @@ export function createDemoBackend(): DemoBackend {
   })
 
   app.get('/api/tags', (c) => c.json({ tags: listTags(state) }))
+  app.post('/api/tags', async (c) => {
+    const body = await jsonBody(c.req.raw)
+    const name = typeof body.name === 'string' ? body.name.trim().replace(/^#+/, '') : ''
+    if (!name || /[\s#]/.test(name) || name.length > LIMITS.tagNameMaxLength) {
+      return apiError(400, 'bad_request', 'Tag name is invalid')
+    }
+    const existing = listTags(state).find((tag) =>
+      tag.name.localeCompare(name, undefined, { sensitivity: 'base' }) === 0)
+    if (existing) return apiError(409, 'conflict', 'A tag with this name already exists')
+    const id = typeof body.id === 'string' ? body.id : newDemoId()
+    state.tagIds.set(name, id)
+    state.tagColors.set(name, body.color === null || typeof body.color === 'string' ? body.color : null)
+    state.cursor++
+    return c.json(listTags(state).find((tag) => tag.id === id)!, 201)
+  })
   app.patch('/api/tags/:id', async (c) => {
     const current = listTags(state).find((tag) => tag.id === c.req.param('id'))
     if (!current) return apiError(404, 'not_found', 'Tag not found')
     const body = await jsonBody(c.req.raw)
+    if (typeof body.color === 'string' && !/^#[0-9a-f]{6}$/i.test(body.color)) {
+      return apiError(400, 'bad_request', 'Tag color must be a six-digit hexadecimal color')
+    }
     if (typeof body.name === 'string' && body.name.trim() && body.name.trim() !== current.name) {
-      const nextName = body.name.trim().replace(/^#/, '')
+      const requestedName = body.name.trim().replace(/^#/, '')
+      const existing = listTags(state).find((tag) => tag.id !== current.id
+        && tag.name.localeCompare(requestedName, undefined, { sensitivity: 'base' }) === 0)
+      const nextName = existing?.name ?? requestedName
       let renamed = 0
       for (const note of state.notes.values()) {
         const content = replaceTagInContent(note.content, current.name, nextName)
@@ -430,10 +454,10 @@ export function createDemoBackend(): DemoBackend {
         renamed++
       }
       state.tagIds.delete(current.name)
-      state.tagIds.set(nextName, current.id)
+      if (!existing) state.tagIds.set(nextName, current.id)
       state.tagColors.set(nextName, body.color === null || typeof body.color === 'string'
         ? body.color
-        : state.tagColors.get(current.name) ?? null)
+        : state.tagColors.get(nextName) ?? state.tagColors.get(current.name) ?? null)
       state.tagColors.delete(current.name)
       state.cursor++
       return c.json({ ok: true as const, renamed })
@@ -1034,6 +1058,7 @@ function importBundle(state: DemoState, value: unknown, result: ImportResult): v
       parentId: raw.parentId ? folderMap.get(raw.parentId) ?? null : null,
       name: typeof raw.name === 'string' ? raw.name : 'Imported folder',
       icon: typeof raw.icon === 'string' ? raw.icon : null,
+      color: organizerColorOrNull(raw.color),
       position: Number.isFinite(raw.position) ? raw.position : state.folders.size + 1,
       createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now(),
       updatedAt: Date.now(),

@@ -29,6 +29,7 @@ export interface FolderRow {
   parent_id: string | null
   name: string
   icon: string | null
+  color: string | null
   position: number
   created_at: number
   updated_at: number
@@ -73,6 +74,7 @@ export function toFolder(row: FolderRow): Folder {
     parentId: row.parent_id,
     name: row.name,
     icon: row.icon,
+    color: row.color,
     position: row.position,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

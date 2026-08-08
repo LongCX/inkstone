@@ -14,9 +14,10 @@ export function imageNeedsOptimization(mime: string, size: number, width: number
 
 
 export async function optimizeImageFile(file: File): Promise<File> {
-  const source = await decodeImageSource(file)
-  if (!source) return file
+  let source: DecodedImageSource | null = null
   try {
+    source = await decodeImageSource(file)
+    if (!source) return file
     if (!imageNeedsOptimization(file.type, file.size, source.width, source.height)) return file
     const scale = Math.min(1, OPTIMIZE_MAX_DIMENSION / Math.max(source.width, source.height))
     const canvas = document.createElement('canvas')
@@ -25,7 +26,7 @@ export async function optimizeImageFile(file: File): Promise<File> {
     const context = canvas.getContext('2d')
     if (!context) return file
     context.clearRect(0, 0, canvas.width, canvas.height)
-    context.drawImage(source, 0, 0, canvas.width, canvas.height)
+    context.drawImage(source.bitmap, 0, 0, canvas.width, canvas.height)
     const keepPng = file.type === 'image/png'
     const blob = await canvasToBlob(canvas, keepPng ? 'image/png' : 'image/jpeg', keepPng ? undefined : JPEG_QUALITY)
     if (!blob || blob.size >= file.size) return file
@@ -34,15 +35,20 @@ export async function optimizeImageFile(file: File): Promise<File> {
       type: keepPng ? 'image/png' : 'image/jpeg',
     })
     return optimized
+  } catch {
+    return file
   } finally {
-    source.close()
+    try {
+      source?.bitmap.close()
+    } catch {
+    }
   }
 }
 
 interface DecodedImageSource {
+  bitmap: ImageBitmap
   width: number
   height: number
-  close: () => void
 }
 
 
@@ -50,7 +56,7 @@ async function decodeImageSource(file: File): Promise<DecodedImageSource | null>
   if (typeof createImageBitmap !== 'function') return null
   try {
     const bitmap = await createImageBitmap(file)
-    return { width: bitmap.width, height: bitmap.height, close: () => bitmap.close() }
+    return { bitmap, width: bitmap.width, height: bitmap.height }
   } catch {
     return null
   }

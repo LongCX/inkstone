@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import { getCookie } from 'hono/cookie'
-import { APP_VERSION, DEFAULT_SETTINGS, mergeSettings, SESSION_COOKIE } from '@shared/constants'
+import { APP_VERSION, DEFAULT_SETTINGS, mergeSettings } from '@shared/constants'
 import { isBitmapAvatarDataUrl, PROFILE_NAME_MAX_LENGTH } from '@shared/avatar'
 import type { AppLocale, PublicUser, SessionInfo, SiteInfo, UserSettings } from '@shared/types'
 import type { AppBindings, Env, Variables } from '../env'
@@ -44,6 +44,7 @@ import {
   clearSessionCookie,
   requireAuth,
   rowToUser,
+  sessionCookieNames,
   USER_COLUMNS,
   writeSessionCookie,
 } from '../middleware/auth'
@@ -120,7 +121,9 @@ async function sessionInfo(env: Env, user: Variables['user']): Promise<SessionIn
 }
 
 async function rotateSession(c: Context<AppBindings>, userId: string): Promise<string> {
-  const previous = getCookie(c, SESSION_COOKIE)
+  const previous = sessionCookieNames(c.req.url)
+    .map((name) => getCookie(c, name))
+    .find(Boolean)
   if (previous) await destroySession(c.env.DB, previous)
   return createSession(c.env.DB, userId)
 }
@@ -224,8 +227,8 @@ authRoutes.post('/login', async (c) => {
   const workTargets = loginWorkTargets(username, requestClientIp(c))
 
   try {
-    await consumeAttemptBudget(db, workTargets)
     await assertNotLocked(db, throttleTargets)
+    await consumeAttemptBudget(db, workTargets)
   } catch (err) {
     if (err instanceof ThrottleError) {
       throw new ApiError(429, 'too_many_attempts', `Too many attempts. Try again in ${err.retryAfterSec} seconds`, {
@@ -390,7 +393,9 @@ authRoutes.post('/password', async (c) => {
 })
 
 authRoutes.post('/logout', async (c) => {
-  const token = getCookie(c, SESSION_COOKIE)
+  const token = sessionCookieNames(c.req.url)
+    .map((name) => getCookie(c, name))
+    .find(Boolean)
   if (token) await destroySession(c.env.DB, token)
   clearSessionCookie(c)
   return c.json({ ok: true })

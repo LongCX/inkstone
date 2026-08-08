@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { LIMITS } from '@shared/constants'
+import { organizerColorOrNull } from '@shared/organizer-colors'
 import { truncateText } from '@shared/text-utils'
 import type { Folder } from '@shared/types'
 import type { AppBindings } from '../env'
@@ -14,7 +15,7 @@ export const foldersRoutes = new Hono<AppBindings>()
 
 foldersRoutes.use('*', requireAuth)
 
-const FOLDER_SELECT = `f.id, f.parent_id, f.name, f.icon, f.position, f.created_at, f.updated_at`
+const FOLDER_SELECT = `f.id, f.parent_id, f.name, f.icon, f.color, f.position, f.created_at, f.updated_at`
 
 foldersRoutes.get('/', async (c) => {
   const { results } = await c.env.DB.prepare(
@@ -29,7 +30,13 @@ foldersRoutes.get('/', async (c) => {
 
 foldersRoutes.post('/', async (c) => {
   const userId = c.get('userId')
-  const body = await readJson<{ id?: string; name?: string; parentId?: string | null; icon?: string | null }>(c, JSON_BODY_LIMITS.small)
+  const body = await readJson<{
+    id?: string
+    name?: string
+    parentId?: string | null
+    icon?: string | null
+    color?: string | null
+  }>(c, JSON_BODY_LIMITS.small)
 
   if (body.name !== undefined && typeof body.name !== 'string') {
     throw ApiError.badRequest('name must be a string')
@@ -39,6 +46,9 @@ foldersRoutes.post('/', async (c) => {
   }
   if (body.icon !== undefined && body.icon !== null && typeof body.icon !== 'string') {
     throw ApiError.badRequest('icon must be a string or null')
+  }
+  if (body.color !== undefined && body.color !== null && !organizerColorOrNull(body.color)) {
+    throw ApiError.badRequest('Folder color is not supported')
   }
   if (body.id !== undefined && !isValidId(body.id)) {
     throw ApiError.badRequest('id must be a valid folder id')
@@ -71,23 +81,24 @@ foldersRoutes.post('/', async (c) => {
        UNION ALL
        SELECT f.id, f.parent_id, a.depth + 1
          FROM folders f JOIN ancestors a ON f.id = a.parent_id
-        WHERE f.user_id = ?2 AND f.deleted_at IS NULL AND a.depth < ?8
+        WHERE f.user_id = ?2 AND f.deleted_at IS NULL AND a.depth < ?9
      )
-     INSERT OR IGNORE INTO folders (id, user_id, parent_id, name, icon, position, created_at, updated_at)
-     SELECT ?1, ?2, ?3, ?4, ?5,
+     INSERT OR IGNORE INTO folders (id, user_id, parent_id, name, icon, color, position, created_at, updated_at)
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6,
             COALESCE((SELECT MAX(position) FROM folders
                        WHERE user_id = ?2 AND parent_id IS ?3 AND deleted_at IS NULL), 0) + 1000,
-            ?6, ?6
+            ?7, ?7
       WHERE (?3 IS NULL OR EXISTS (
                SELECT 1 FROM folders WHERE id = ?3 AND user_id = ?2 AND deleted_at IS NULL
              ))
-        AND COALESCE((SELECT MAX(depth) FROM ancestors), 0) < ?7`,
+        AND COALESCE((SELECT MAX(depth) FROM ancestors), 0) < ?8`,
   ).bind(
     id,
     userId,
     parentId,
     name,
     body.icon ? truncateText(body.icon, 8) || null : null,
+    organizerColorOrNull(body.color),
     now,
     LIMITS.folderDepthMax,
     LIMITS.folderDepthMax + 1,
@@ -111,6 +122,7 @@ foldersRoutes.patch('/:id', async (c) => {
     parentId?: string | null
     beforeId?: string | null
     icon?: string | null
+    color?: string | null
   }>(c, JSON_BODY_LIMITS.small)
 
   const existing = await c.env.DB.prepare(
@@ -149,6 +161,13 @@ foldersRoutes.patch('/:id', async (c) => {
   if (body.icon !== undefined) {
     binds.push(body.icon ? truncateText(body.icon, 8) : null)
     sets.push(`icon = ?${binds.length}`)
+  }
+  if (body.color !== undefined) {
+    if (body.color !== null && !organizerColorOrNull(body.color)) {
+      throw ApiError.badRequest('Folder color is not supported')
+    }
+    binds.push(organizerColorOrNull(body.color))
+    sets.push(`color = ?${binds.length}`)
   }
   const graph = await loadFolderGraph(c.env.DB, userId)
   let parentId = existing.parent_id
@@ -315,6 +334,11 @@ foldersRoutes.delete('/:id', async (c) => {
          SELECT ?2, 'note', id, 'upsert', ?4 FROM notes
           WHERE user_id = ?2 AND folder_id IN (SELECT id FROM subtree)`,
       ).bind(id, userId, row.updated_at, now),
+      c.env.DB.prepare(
+        `${tree} INSERT OR REPLACE INTO ai_index_queue (user_id, note_id, kind, created_at)
+         SELECT ?2, id, 'delete', ?4 FROM notes
+          WHERE user_id = ?2 AND folder_id IN (SELECT id FROM subtree)`,
+      ).bind(id, userId, row.updated_at, now),
       c.env.DB.prepare(`${tree} DELETE FROM links WHERE source_note_id IN (${noteIds})`)
         .bind(id, userId, row.updated_at),
       c.env.DB.prepare(
@@ -469,6 +493,7 @@ async function normalizeSiblingPositions(
   userId: string,
   siblings: FolderOrderRow[],
 ): Promise<void> {
+  const MAX_BATCH_STATEMENTS = 80
   const now = Date.now()
   const statements: D1PreparedStatement[] = []
   for (let index = 0; index < siblings.length; index++) {
@@ -487,7 +512,9 @@ async function normalizeSiblingPositions(
       ).bind(sibling.id, userId, now),
     )
   }
-  if (statements.length) await db.batch(statements)
+  for (let start = 0; start < statements.length; start += MAX_BATCH_STATEMENTS) {
+    await db.batch(statements.slice(start, start + MAX_BATCH_STATEMENTS))
+  }
 }
 
 async function folderPromotionOrder(

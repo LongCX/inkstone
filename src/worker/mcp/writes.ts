@@ -369,7 +369,7 @@ async function patchNote(
     if (contentChanged) {
       statements.push(
         context.env.DB.prepare(
-          `DELETE FROM tags WHERE user_id = ?1
+          `DELETE FROM tags WHERE user_id = ?1 AND is_manual = 0
              AND ${shiftSqlPlaceholders(mutationGuard, 1)}
              AND id NOT IN (SELECT tag_id FROM note_tags)`,
         ).bind(context.userId, ...mutationValues),

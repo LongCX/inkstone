@@ -3,6 +3,7 @@ import { createMiddleware } from 'hono/factory'
 import { getCookie, setCookie } from 'hono/cookie'
 import {
   CLIENT_HEADER,
+  LEGACY_SESSION_COOKIE,
   SESSION_COOKIE,
   SESSION_RENEW_BEFORE_MS,
   SESSION_TTL_MS,
@@ -47,7 +48,8 @@ interface SessionUserRow extends UserRow {
 }
 
 export const loadSession = createMiddleware<AppBindings>(async (c, next) => {
-  const token = getCookie(c, SESSION_COOKIE)
+  const cookieNames = sessionCookieNames(c.req.url)
+  const token = cookieNames.map((name) => getCookie(c, name)).find(Boolean)
 
   if (token && isSessionToken(token)) {
     const row = await c.env.DB.prepare(
@@ -105,7 +107,7 @@ export const requireClientHeader = createMiddleware<AppBindings>(async (c, next)
 export function sessionCookieString(requestUrl: string, token: string): string {
   const secure = new URL(requestUrl).protocol === 'https:'
   const parts = [
-    `${SESSION_COOKIE}=${token}`,
+    `${secure ? SESSION_COOKIE : LEGACY_SESSION_COOKIE}=${token}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
@@ -120,11 +122,21 @@ export function writeSessionCookie(c: Context<AppBindings>, token: string): void
 }
 
 export function clearSessionCookie(c: Context<AppBindings>): void {
-  setCookie(c, SESSION_COOKIE, '', {
-    path: '/',
-    httpOnly: true,
-    maxAge: 0,
-    sameSite: 'Lax',
-    secure: new URL(c.req.url).protocol === 'https:',
-  })
+  const secure = new URL(c.req.url).protocol === 'https:'
+  const names = secure ? [SESSION_COOKIE, LEGACY_SESSION_COOKIE] : [LEGACY_SESSION_COOKIE]
+  for (const name of names) {
+    setCookie(c, name, '', {
+      path: '/',
+      httpOnly: true,
+      maxAge: 0,
+      sameSite: 'Lax',
+      secure,
+    })
+  }
+}
+
+export function sessionCookieNames(requestUrl: string): string[] {
+  return new URL(requestUrl).protocol === 'https:'
+    ? [SESSION_COOKIE, LEGACY_SESSION_COOKIE]
+    : [LEGACY_SESSION_COOKIE, SESSION_COOKIE]
 }

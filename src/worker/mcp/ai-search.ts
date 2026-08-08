@@ -46,6 +46,7 @@ export interface SemanticSearchHit {
 interface QueueRow {
   note_id: string
   kind: AiIndexKind
+  created_at: number
 }
 
 interface EmbeddingRow {
@@ -127,7 +128,9 @@ export async function enqueueNoteIndex(
     : ''
   await db.prepare(
     `INSERT OR REPLACE INTO ai_index_queue (user_id, note_id, kind, created_at)
-     SELECT ?1, ?2, ?3, ?4${guard}`,
+     SELECT ?1, ?2, ?3,
+       MAX(?4, COALESCE((SELECT created_at + 1 FROM ai_index_queue
+         WHERE user_id = ?1 AND note_id = ?2), ?4))${guard}`,
   ).bind(userId, noteId, kind, now, aiSearchPrefKey(userId)).run()
 }
 
@@ -143,7 +146,9 @@ export async function enqueueAllNotesForIndex(
     const chunk = results.slice(start, start + ENQUEUE_CHUNK)
     const statements = chunk.map(({ id }) => db.prepare(
       `INSERT OR REPLACE INTO ai_index_queue (user_id, note_id, kind, created_at)
-       VALUES (?1, ?2, 'embed', ?3)`,
+       SELECT ?1, ?2, 'embed',
+         MAX(?3, COALESCE((SELECT created_at + 1 FROM ai_index_queue
+           WHERE user_id = ?1 AND note_id = ?2), ?3))`,
     ).bind(userId, id, now))
     await db.batch(statements)
   }
@@ -187,7 +192,7 @@ export async function drainAiIndexQueue(env: Env, max: number): Promise<{ proces
 
 async function drainUserQueue(env: Env, userId: string, max: number): Promise<number> {
   const { results } = await env.DB.prepare(
-    `SELECT note_id, kind FROM ai_index_queue
+    `SELECT note_id, kind, created_at FROM ai_index_queue
       WHERE user_id = ?1 ORDER BY created_at ASC LIMIT ?2`,
   ).bind(userId, max).all<QueueRow>()
   let done = 0
@@ -207,12 +212,20 @@ async function processQueueItem(env: Env, userId: string, item: QueueRow): Promi
   const db = env.DB
   const ai = env.AI
   if (!ai) return
+  const queueGuard = `EXISTS (SELECT 1 FROM ai_index_queue
+    WHERE user_id = ?3 AND note_id = ?4 AND kind = ?5 AND created_at = ?6)`
+  const insertQueueGuard = `EXISTS (SELECT 1 FROM ai_index_queue
+    WHERE user_id = ?6 AND note_id = ?7 AND kind = ?8 AND created_at = ?9)`
   if (item.kind === 'delete') {
     await db.batch([
-      db.prepare(`DELETE FROM ai_note_embeddings WHERE user_id = ?1 AND note_id = ?2`)
-        .bind(userId, item.note_id),
-      db.prepare(`DELETE FROM ai_index_queue WHERE user_id = ?1 AND note_id = ?2`)
-        .bind(userId, item.note_id),
+      db.prepare(
+        `DELETE FROM ai_note_embeddings
+          WHERE user_id = ?1 AND note_id = ?2 AND ${queueGuard}`,
+      ).bind(userId, item.note_id, userId, item.note_id, item.kind, item.created_at),
+      db.prepare(
+        `DELETE FROM ai_index_queue
+          WHERE user_id = ?1 AND note_id = ?2 AND kind = ?3 AND created_at = ?4`,
+      ).bind(userId, item.note_id, item.kind, item.created_at),
     ])
     return
   }
@@ -222,10 +235,14 @@ async function processQueueItem(env: Env, userId: string, item: QueueRow): Promi
   ).bind(item.note_id, userId).first<{ title: string; content: string }>()
   if (!note) {
     await db.batch([
-      db.prepare(`DELETE FROM ai_note_embeddings WHERE user_id = ?1 AND note_id = ?2`)
-        .bind(userId, item.note_id),
-      db.prepare(`DELETE FROM ai_index_queue WHERE user_id = ?1 AND note_id = ?2`)
-        .bind(userId, item.note_id),
+      db.prepare(
+        `DELETE FROM ai_note_embeddings
+          WHERE user_id = ?1 AND note_id = ?2 AND ${queueGuard}`,
+      ).bind(userId, item.note_id, userId, item.note_id, item.kind, item.created_at),
+      db.prepare(
+        `DELETE FROM ai_index_queue
+          WHERE user_id = ?1 AND note_id = ?2 AND kind = ?3 AND created_at = ?4`,
+      ).bind(userId, item.note_id, item.kind, item.created_at),
     ])
     return
   }
@@ -234,12 +251,24 @@ async function processQueueItem(env: Env, userId: string, item: QueueRow): Promi
   await db.batch([
     db.prepare(
       `INSERT INTO ai_note_embeddings (user_id, note_id, model, vector, indexed_at)
-       VALUES (?1, ?2, ?3, ?4, ?5)
+       SELECT ?1, ?2, ?3, ?4, ?5 WHERE ${insertQueueGuard}
        ON CONFLICT(user_id, note_id) DO UPDATE SET
          vector = excluded.vector, indexed_at = excluded.indexed_at`,
-    ).bind(userId, item.note_id, AI_EMBEDDING_MODEL, encodeVector(vector), Date.now()),
-    db.prepare(`DELETE FROM ai_index_queue WHERE user_id = ?1 AND note_id = ?2`)
-      .bind(userId, item.note_id),
+    ).bind(
+      userId,
+      item.note_id,
+      AI_EMBEDDING_MODEL,
+      encodeVector(vector),
+      Date.now(),
+      userId,
+      item.note_id,
+      item.kind,
+      item.created_at,
+    ),
+    db.prepare(
+      `DELETE FROM ai_index_queue
+        WHERE user_id = ?1 AND note_id = ?2 AND kind = ?3 AND created_at = ?4`,
+    ).bind(userId, item.note_id, item.kind, item.created_at),
   ])
 }
 
@@ -255,7 +284,7 @@ export async function searchSemanticNotes(
   query: string,
   filters: SemanticFilters,
 ): Promise<SemanticSearchHit[] | null> {
-  if (!env.AI) return null
+  if (!env.AI || !await isAiSearchEnabled(db, userId)) return null
   const queryVector = await embedText(env.AI, query)
   const { binds, where } = semanticWhere(userId, filters)
   binds.push(MAX_SEMANTIC_VECTORS)

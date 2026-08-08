@@ -2,12 +2,16 @@ import { ApiError } from './errors'
 import { newId } from './id'
 
 
+export type LeaseRelease = (() => Promise<void>) & {
+  renew: () => Promise<boolean>
+}
+
 export async function acquireLease(
   db: D1Database,
   key: string,
   ttlMs: number,
   conflictMessage: string,
-): Promise<() => Promise<void>> {
+): Promise<LeaseRelease> {
   const token = newId()
   const now = Date.now()
   const value = JSON.stringify({ token, expiresAt: now + ttlMs })
@@ -22,7 +26,16 @@ export async function acquireLease(
   if (!acquired.meta.changes) throw ApiError.conflict(conflictMessage)
 
   let released = false
-  return async () => {
+  const renew = async (): Promise<boolean> => {
+    if (released) return false
+    const now = Date.now()
+    const renewed = await db.prepare(
+      `UPDATE app_meta SET value = ?3
+        WHERE key = ?1 AND json_extract(value, '$.token') = ?2`,
+    ).bind(key, token, JSON.stringify({ token, expiresAt: now + ttlMs })).run()
+    return renewed.meta.changes === 1
+  }
+  const release = (async () => {
     if (released) return
     released = true
     await db.prepare(
@@ -30,5 +43,7 @@ export async function acquireLease(
     ).bind(key, token).run().catch((error) => {
       console.warn(`[inkstone] Task lock ${key} will release automatically after timeout:`, error)
     })
-  }
+  }) as LeaseRelease
+  release.renew = renew
+  return release
 }

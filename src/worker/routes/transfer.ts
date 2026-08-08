@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { LIMITS } from '@shared/constants'
 import { countText, deriveExcerpt, deriveTitle, splitFrontMatter } from '@shared/markdown-utils'
 import { truncateText, utf8ByteLength } from '@shared/text-utils'
+import { organizerColorOrNull } from '@shared/organizer-colors'
 import type { ExportBundle, ImportResult } from '@shared/types'
 import {
   persistAttachment,
@@ -259,6 +260,7 @@ interface SourceFolder {
   parentId: string | null
   name: string
   icon: string | null
+  color: string | null
   position?: number
   createdAt?: number
   updatedAt?: number
@@ -266,6 +268,7 @@ interface SourceFolder {
 
 interface FolderImportMetadata {
   icon: string | null
+  color: string | null
   position?: number
   createdAt?: number
   updatedAt?: number
@@ -318,6 +321,7 @@ async function importBundle(
       name,
       parentId: sourceKey(rawFolder.parentId) ?? null,
       icon: typeof rawFolder.icon === 'string' ? truncateText(rawFolder.icon, 8) || null : null,
+      color: organizerColorOrNull(rawFolder.color),
       position: finiteNumber(rawFolder.position),
       createdAt: validTimestamp(rawFolder.createdAt),
       updatedAt: validTimestamp(rawFolder.updatedAt),
@@ -410,7 +414,7 @@ async function importBundle(
       const importedUpdatedAt = validTimestamp(note.updatedAt)
       const importedDeletedAt = validTimestamp(note.deletedAt)
       const effectiveUpdatedAt = Math.max(
-        importedUpdatedAt || importedCreatedAt || Date.now(),
+        importedUpdatedAt || importedCreatedAt,
         importedDeletedAt,
       )
       const existing = sourceId
@@ -783,17 +787,18 @@ async function restoreTagMetadata(
   userId: string,
   rawTags: unknown[],
 ): Promise<void> {
-  const byName = new Map<string, { name: string; color: string }>()
+  const byName = new Map<string, { id: string; name: string; color: string | null }>()
   for (const raw of rawTags) {
-    if (!isRecord(raw) || typeof raw.name !== 'string' || typeof raw.color !== 'string') continue
+    if (!isRecord(raw) || typeof raw.name !== 'string') continue
     const name = raw.name.trim().replace(/^#+/, '')
-    if (
-      !name ||
-      name.length > LIMITS.tagNameMaxLength ||
-      /[\s#]/.test(name) ||
-      !raw.color.trim()
-    ) continue
-    byName.set(name, { name, color: truncateText(raw.color.trim(), 32) })
+    if (!name || name.length > LIMITS.tagNameMaxLength || /[\s#]/.test(name)) continue
+    byName.set(name.toLocaleLowerCase(), {
+      id: newId(),
+      name,
+      color: typeof raw.color === 'string' && /^#[0-9a-f]{6}$/i.test(raw.color.trim())
+        ? raw.color.trim()
+        : null,
+    })
   }
   if (!byName.size) return
 
@@ -801,22 +806,34 @@ async function restoreTagMetadata(
   const now = Date.now()
   await db.batch([
     db.prepare(
-      `UPDATE tags SET color = (
-         SELECT json_extract(j.value, '$.color') FROM json_each(?1) AS j
-          WHERE json_extract(j.value, '$.name') = tags.name LIMIT 1
-       )
-       WHERE user_id = ?2 AND color IS NULL
-         AND EXISTS (
-           SELECT 1 FROM json_each(?1) AS j
-            WHERE json_extract(j.value, '$.name') = tags.name
-         )`,
+      `INSERT INTO tags (id, user_id, name, color, is_manual, created_at)
+       SELECT json_extract(j.value, '$.id'), ?2,
+              json_extract(j.value, '$.name'), json_extract(j.value, '$.color'), 1, ?3
+         FROM json_each(?1) AS j
+        WHERE NOT EXISTS (
+          SELECT 1 FROM tags existing
+           WHERE existing.user_id = ?2
+             AND existing.name = json_extract(j.value, '$.name') COLLATE NOCASE
+        )`,
+    ).bind(rows, userId, now),
+    db.prepare(
+      `UPDATE tags SET
+         color = COALESCE(color, (
+           SELECT json_extract(j.value, '$.color') FROM json_each(?1) AS j
+            WHERE json_extract(j.value, '$.name') = tags.name COLLATE NOCASE LIMIT 1
+         )),
+         is_manual = 1
+       WHERE user_id = ?2 AND EXISTS (
+         SELECT 1 FROM json_each(?1) AS j
+          WHERE json_extract(j.value, '$.name') = tags.name COLLATE NOCASE
+       )`,
     ).bind(rows, userId),
     db.prepare(
       `INSERT INTO changes (user_id, entity, entity_id, op, at)
        SELECT ?1, 'tag', t.id, 'upsert', ?2
          FROM tags t JOIN json_each(?3) AS j
-           ON json_extract(j.value, '$.name') = t.name
-        WHERE t.user_id = ?1 AND t.color = json_extract(j.value, '$.color')`,
+           ON json_extract(j.value, '$.name') = t.name COLLATE NOCASE
+        WHERE t.user_id = ?1`,
     ).bind(userId, now, rows),
   ])
 }
@@ -1176,11 +1193,12 @@ async function ensureFolderPath(
       : now
     const position = isFinal ? finiteNumber(finalMetadata?.position) ?? now : now
     const icon = isFinal ? finalMetadata?.icon ?? null : null
+    const color = isFinal ? finalMetadata?.color ?? null : null
     const insert = db.prepare(
       `INSERT OR IGNORE INTO folders
-         (id, user_id, parent_id, name, icon, position, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
-    ).bind(id, userId, parentId, segment, icon, position, createdAt, updatedAt)
+         (id, user_id, parent_id, name, icon, color, position, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+    ).bind(id, userId, parentId, segment, icon, color, position, createdAt, updatedAt)
     const [created] = await db.batch([
       insert,
       db.prepare(

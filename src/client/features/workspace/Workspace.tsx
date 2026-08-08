@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { EditorView } from '@codemirror/view';
-import { ArrowLeft, Columns2, Download, Eye, FileCode, FileDown, FileText, History, Link as LinkIcon, ListTree, MoreHorizontal, PanelRightClose, Pencil, Plus, Share2, Star, X, } from 'lucide-react';
+import { ArrowLeft, Columns2, Download, Eye, FileCode, FileDown, FileText, FolderClosed, Hash, History, Link as LinkIcon, ListTree, MoreHorizontal, PanelRightClose, Pencil, Plus, Share2, Star, X, } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { api } from '../../lib/api';
 import { readingMinutes } from '@shared/markdown-utils';
@@ -26,7 +26,8 @@ import { SaveIndicator } from '../shell/SaveIndicator';
 import type { Heading } from '../../lib/markdown/renderer';
 import { useUi, type WorkspacePane } from '../../store/ui';
 import { useSession } from '../../store/session';
-import { useActiveNote, useNotes } from '../../store/notes';
+import { createContextualNote, useActiveNote, useNotes } from '../../store/notes';
+import { folderPathLabel, openFolderView } from '../../lib/folders';
 import { useSyncScroll } from './sync-scroll';
 import { t, useLocale } from "../../lib/i18n";
 const SPLIT_HANDLE_WIDTH = 1;
@@ -43,9 +44,9 @@ export function Workspace({ mobileLayout = 'edit', onMobileBack, pane = 'active'
     const updateSettings = useSession((s) => s.updateSettings);
     const editContent = useNotes((s) => s.editContent);
     const editTitle = useNotes((s) => s.editTitle);
-    const createNote = useNotes((s) => s.createNote);
     const patchNote = useNotes((s) => s.patchNote);
     const tags = useNotes((s) => s.tags);
+    const folders = useNotes((s) => s.folders);
     const notes = useNotes((s) => s.notes);
     const toast = useUi((s) => s.toast);
     const locale = useLocale();
@@ -89,6 +90,7 @@ export function Workspace({ mobileLayout = 'edit', onMobileBack, pane = 'active'
     const defaultEditorWidth = defaultContentWidth / 2;
     const defaultPreviewWidth = PREVIEW_BORDER_WIDTH + defaultOutlineWidth + defaultEditorWidth;
     const effectiveSplitRatio = splitRatio ?? (containerWidth > 0 ? defaultEditorWidth / containerWidth : 0.5);
+    const tagColors = useMemo(() => new Map(tags.map((tag) => [tag.name, tag.color])), [tags]);
     const editorWidth = splitRatio === null
         ? containerWidth > 0
             ? `${defaultEditorWidth}px`
@@ -196,7 +198,7 @@ export function Workspace({ mobileLayout = 'edit', onMobileBack, pane = 'active'
         if (!note || !view || !paneActive)
             return;
         const frame = window.requestAnimationFrame(() => {
-            if (!note.title && !content)
+            if (!note.title)
                 titleInputRef.current?.focus();
             else
                 view.focus();
@@ -204,12 +206,14 @@ export function Workspace({ mobileLayout = 'edit', onMobileBack, pane = 'active'
         return () => window.cancelAnimationFrame(frame);
     }, [note?.id, paneActive, view]);
     if (!note)
-        return <NoNoteSelected onCreate={() => void createNote()}/>;
+        return <NoNoteSelected onCreate={() => void createContextualNote()}/>;
     if (!loaded) {
         return (<div className="h-full overflow-hidden bg-[var(--bg-editor)]" aria-busy="true" aria-label={t("workspace.loading_note_content")}>
         <EditorSkeleton />
       </div>);
     }
+    const noteFolder = note.folderId ? folders.find((folder) => folder.id === note.folderId) ?? null : null;
+    const noteFolderPath = note.folderId ? folderPathLabel(folders, note.folderId) : '';
     const exportNote = async (format: 'md' | 'html' | 'pdf') => {
         setExportMenuOpen(false);
         if (!note)
@@ -428,12 +432,20 @@ export function Workspace({ mobileLayout = 'edit', onMobileBack, pane = 'active'
             }}/>
         </Drawer>)}
 
-      <footer className="flex h-[var(--statusbar-h)] shrink-0 items-center gap-3 border-t border-[var(--border-subtle)] px-3 text-[11px] text-[var(--text-quaternary)]">
+      <footer className="flex h-[var(--statusbar-h)] shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border-subtle)] px-3 text-[11px] text-[var(--text-quaternary)]">
         <span className="tabular">{note.wordCount}{t("common.words")}</span>
-        <span className="tabular">{note.charCount}{t("workspace.characters")}</span>
+        <span className="hidden tabular sm:inline">{note.charCount}{t("workspace.characters")}</span>
         <span className="hidden tabular md:inline">{t("common.about")}{readingMinutes(note.wordCount)}{t("common.min")}</span>
-        {note.tags.length > 0 && (<span className="hidden min-w-0 truncate md:inline">
-            {note.tags.map((t) => `#${t}`).join(' ')}
+        {noteFolder && noteFolderPath && (<Tooltip label={noteFolderPath} side="top">
+            <button type="button" onClick={() => openFolderView(folders, noteFolder.id)} className="inline-flex min-w-0 max-w-40 items-center gap-1 truncate rounded px-1 py-0.5 text-[var(--text-tertiary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] md:max-w-48">
+              <FolderClosed size={11} className="shrink-0" style={{ color: noteFolder.color ?? undefined }}/>
+              <span className="truncate">{noteFolderPath}</span>
+            </button>
+          </Tooltip>)}
+        {note.tags.length > 0 && (<span className="flex min-w-0 items-center gap-0.5 overflow-hidden">
+            {note.tags.slice(0, isMobile ? 2 : 4).map((name) => (<button key={name} type="button" onClick={() => useUi.getState().openView('tag', { tag: name })} className="inline-flex min-w-0 items-center gap-0.5 rounded px-1 py-0.5 text-[var(--text-tertiary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--accent)]">
+                <Hash size={9} className="shrink-0" style={{ color: tagColors.get(name) ?? undefined }}/><span className="truncate">{name}</span>
+              </button>))}
           </span>)}
         <span className="flex-1"/>
         <span className={cn('hidden', grouped ? '2xl:inline' : 'lg:inline')}>{t("common.created")}{fullTime(note.createdAt)}</span>

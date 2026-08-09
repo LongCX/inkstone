@@ -63,9 +63,10 @@ Existing databases are upgraded automatically through versioned, idempotent migr
 
 ## Exports and backups
 
-- JSON export preserves structured notebook data for re-import.
-- ZIP export includes structured data, readable Markdown files, attachments, and a manifest.
-- Remote backup targets support WebDAV and S3-compatible storage.
+- JSON export preserves legacy structured notebook data for re-import.
+- ZIP export and remote backups use the same verified Markdown snapshot format, including readable notes, archived and trashed notes, attachments, and a completion marker.
+- Remote backup targets support WebDAV and S3-compatible storage, with duplicate attachment content stored only once inside each snapshot.
+- Large backups can be restored by selecting the backup folder, without loading one complete archive into memory.
 - Multiple targets can be configured and run manually or on a schedule.
 - Login passwords, active sessions, share passwords, and backup-service credentials are not included in exports.
 

@@ -71,6 +71,7 @@
     "@shikijs/themes": "^4.3.1",
     "agents": "0.20.1",
     "aws4fetch": "^1.0.20",
+    "client-zip": "2.5.0",
     "clsx": "^2.1.1",
     "dompurify": "^3.4.12",
     "hono": "4.12.34",

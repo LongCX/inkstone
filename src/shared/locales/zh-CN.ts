@@ -414,8 +414,15 @@ export const ZH_CN_MESSAGES = {
     "pwa.install_description": "在独立窗口中打开 Inkstone，并让应用外壳保持离线可用。",
     "pwa.install_inkstone": "安装 Inkstone",
     "pwa.installed": "已安装",
-    "pwa.offline_ready": "Inkstone 已可离线打开",
-    "pwa.offline_ready_description": "应用外壳已保存在这台设备上。",
+    "pwa.offline_ready": "完整离线资源已准备好",
+    "pwa.offline_ready_description": "Inkstone 的所有功能现在都能在这台设备上断网打开。",
+    "pwa.complete_offline_access": "完整离线能力",
+    "pwa.complete_offline_preparing_description": "Inkstone 会保持流畅，并在后台安静地补齐其余功能。",
+    "pwa.complete_offline_ready": "全部功能已就绪",
+    "pwa.complete_offline_ready_description": "从未打开过的功能现在也可以离线使用。",
+    "pwa.complete_offline_retry_description": "已下载的资源会保留，网络恢复后将自动继续。",
+    "pwa.preparing_progress": "正在准备 {completed}/{total}",
+    "pwa.waiting_for_network": "等待继续",
     "pwa.refresh_now": "立即刷新",
     "pwa.update_ready": "应用更新已就绪",
     "pwa.update_ready_description": "方便时刷新即可；刷新前会先保存待处理的笔记更改。",
@@ -443,13 +450,13 @@ export const ZH_CN_MESSAGES = {
     "settings.background_color": "背景色",
     "settings.background_paper": "暖纸",
     "settings.background_white": "纯白",
-    "settings.accent.amber": "黄铜",
-    "settings.accent.celadon": "青瓷",
+    "settings.accent.amber": "金盏黄",
+    "settings.accent.celadon": "翡翠绿",
     "settings.accent.cinnabar": "朱砂",
-    "settings.accent.graphite": "石墨",
-    "settings.accent.indigo": "靛蓝",
-    "settings.accent.terracotta": "赤陶",
-    "settings.accent.wisteria": "紫藤",
+    "settings.accent.graphite": "雾岩灰",
+    "settings.accent.indigo": "深海蓝",
+    "settings.accent.terracotta": "湖水青",
+    "settings.accent.wisteria": "鸢尾紫",
     "settings.access_key_id": "Access Key ID",
     "settings.account": "账户",
     "settings.action_failed_try_again": "操作失败，请重试",
@@ -477,8 +484,16 @@ export const ZH_CN_MESSAGES = {
     "settings.back_up_now": "立即备份",
     "settings.backup": "备份",
     "settings.backup_completed_value0_targets": "备份完成 · {value0} 个目标",
+    "settings.backup_complete_marker_mismatch": "备份完成标记与清单不一致：{value0}",
+    "settings.backup_duplicate_path": "备份目录中存在重复路径：{value0}",
     "settings.backup_failed": "备份失败",
-    "settings.backup_format": "打包方式",
+    "settings.backup_file_checksum_failed": "备份文件校验失败：{value0}",
+    "settings.backup_file_size_mismatch": "备份文件大小不匹配：{value0}",
+    "settings.backup_manifest_not_found": "没有找到 Inkstone Markdown 备份清单，请选择解压后的完整备份目录（应包含 manifest.json、COMPLETE、notes 等）",
+    "settings.backup_manifest_invalid": "已完成快照的清单无效或版本不受支持：{value0}",
+    "settings.backup_missing_file": "完整备份缺少文件：{value0}",
+    "settings.backup_no_complete_snapshot": "这个目录里没有带有效 COMPLETE 标记的完整快照",
+    "settings.backup_newer_snapshot_skipped": "较新的快照（{value0}）未完成，已改为恢复最近一个完整快照",
     "settings.backup_target": "备份目标",
     "settings.backup_target_added": "已添加备份目标",
     "settings.backup_target_deleted": "已删除备份目标",
@@ -529,7 +544,7 @@ export const ZH_CN_MESSAGES = {
     "settings.display_name_saved": "显示名称已保存",
     "settings.download_json": "下载 JSON",
     "settings.download_zip": "下载 ZIP",
-    "settings.each_backup_goes_independently_to_every_enabled_target_it_includes_notes": "每次备份会同时投递到所有启用的目标，彼此独立。备份包含笔记、目录、标签和附件，可直接从 ZIP 完整恢复。",
+    "settings.each_backup_goes_independently_to_every_enabled_target_it_includes_notes": "每个目标都会收到一个可直接下载的完整 ZIP：笔记保持文件夹层级，归档、回收站和原始附件分开放置；生成和上传全程采用流式处理。",
     "settings.edit_backup_target": "编辑备份目标",
     "settings.editor": "编辑器",
     "settings.endpoint": "端点",
@@ -568,10 +583,8 @@ export const ZH_CN_MESSAGES = {
     "settings.import_failed": "导入失败",
     "settings.operation_completed_but_refresh_failed": "操作已完成，但页面刷新失败，请稍后重试",
     "settings.import_file": "导入文件",
-    "settings.includes_every_note_folder_tag_and_attachment_for_a_complete_restore_plu": "包含全部笔记、目录、标签和附件，可完整还原；同时保留可直接阅读的 .md",
+    "settings.includes_every_note_folder_tag_and_attachment_for_a_complete_restore_plu": "下载与自动备份相同的完整 ZIP；超大备份可解压后选择目录，Inkstone 会分批校验并恢复",
     "settings.indent_width": "缩进宽度",
-    "settings.individual_file_mirror": "逐文件镜像",
-    "settings.individual_files": "逐文件",
     "settings.inkstone_import_reminder": "[Inkstone] 导入提醒:",
     "settings.interface_density": "界面密度",
     "settings.interface_language": "界面语言",
@@ -722,6 +735,8 @@ export const ZH_CN_MESSAGES = {
     "settings.registration_open": "已开放注册",
     "settings.registration_status": "注册状态",
     "settings.region": "区域",
+    "settings.restore_backup_folder": "恢复 Inkstone 备份文件夹",
+    "settings.restore_backup_folder_description": "选择新 ZIP 解压后的目录，或旧版同时包含 attachments 和 snapshots 的备份根目录；Inkstone 会验证 COMPLETE 并分批恢复",
     "settings.reloaded_all_data": "已同步最新内容",
     "settings.render_and_using_katex": "显示行内公式和块级公式",
     "settings.render_mermaid_code_blocks_into_flowcharts": "将 Mermaid 代码块显示为图表",
@@ -735,6 +750,7 @@ export const ZH_CN_MESSAGES = {
     "settings.scroll_sync": "滚动同步",
     "settings.sec": "秒",
     "settings.select_file": "选择文件",
+    "settings.select_backup_folder": "选择备份文件夹",
     "settings.selected_avatar": "当前选择",
     "settings.select_object_read_write_for_permissions_and_create_it_directly": "，权限全选“对象读和写”，直接创建。",
     "settings.secret_access_key": "Secret Access Key",
@@ -745,7 +761,6 @@ export const ZH_CN_MESSAGES = {
     "settings.sign_in_security": "登录安全",
     "settings.sign_up": "前往注册",
     "settings.simplified_chinese": "简体中文",
-    "settings.single_archive": "单个压缩包",
     "settings.spellcheck": "拼写检查",
     "settings.standard": "标准",
     "settings.store_backups_in_this_directory_or_leave_blank_to_use_the_root_directory": "备份会放在这个目录下，留空则放在根目录",
@@ -771,8 +786,6 @@ export const ZH_CN_MESSAGES = {
     "settings.up_to_10_gb": "最高 10 GB",
     "settings.update_failed": "更新失败",
     "settings.upload_local_image": "上传本地图片",
-    "settings.upload_individual_files_so_they_remain_browsable_and_editable_in_the_sto": "逐个文件上传，可以直接在网盘里浏览和编辑",
-    "settings.upload_one_zip_to_minimize_requests_best_for_rate_limited_storage_provid": "打成一个 ZIP 上传，请求数最少，适合有限流的网盘",
     "settings.uploaded_avatar": "已上传的本地图片",
     "settings.use_name_avatar": "使用姓名头像",
     "settings.username_is_sign_in_id": "@用户名是登录标识，不会随显示名称一起改变。",
@@ -1042,19 +1055,23 @@ aliases:
 
 ## 为什么适合长期使用
 
-::: tabs
-@tab 写作
+:::: tabs
+::: tab-item 写作
 独立标题、源码编辑、实时预览、双向滚动、专注模式、打字机模式、大纲与版本历史。
+:::
 
-@tab 组织
+::: tab-item 组织
 最多 12 层且可拖拽排序的文件夹、正文 \`#标签\`、\`[[双链]]\`、反向链接、关系图谱和中文全文搜索。桌面端可以在侧边再开一篇笔记，每个窗格独立选择编辑、分栏或预览；删除文件夹时会保留并提升子文件夹，直属笔记移到上一级。
+:::
 
-@tab 搜索与 AI
+::: tab-item 搜索与 AI
 命令面板、关键词搜索，以及可选的 Workers AI 语义/混合搜索。每个账号使用独立索引；AI 不可用时自动回退到关键词结果。
+:::
 
-@tab 安全与备份
+::: tab-item 安全与备份
 自托管、可安装 PWA、离线可写、多设备同步和冲突副本；可同时备份到多个 WebDAV 或 S3 目标，并导出可读 Markdown、附件与完整结构化数据。
 :::
+::::
 
 ## 私有 MCP（可选）
 
@@ -1148,13 +1165,15 @@ flowchart LR
 ~~~~
 
 ~~~~md-example title="标签页"
-::: tabs
-@tab 第一个标签
+:::: tabs
+::: tab-item 第一个标签
 这是第一个标签页的内容。
+:::
 
-@tab 第二个标签
+::: tab-item 第二个标签
 这是第二个标签页的内容。
 :::
+::::
 ~~~~
 
 ~~~~md-example title="折叠内容"

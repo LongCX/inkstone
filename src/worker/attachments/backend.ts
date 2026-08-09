@@ -10,6 +10,12 @@ export interface AttachmentObjectMetadata {
   sha256: string
 }
 
+export interface AttachmentObjectStream {
+  body: ReadableStream<Uint8Array>
+  size: number | null
+  metadata: Partial<AttachmentObjectMetadata> | null
+}
+
 export function selectAttachmentStorage(env: Env): AttachmentObjectStorage | null {
   if (env.FILES) return 'r2'
   if (env.FILES_KV) return 'kv'
@@ -72,6 +78,42 @@ export async function readAttachmentObject(
   if (!env.FILES_KV) throw new Error('KV attachment storage is not configured')
   const value = await env.FILES_KV.get(key, 'arrayBuffer')
   return value ? new Uint8Array(value) : null
+}
+
+export async function readAttachmentObjectStream(
+  env: Env,
+  storage: AttachmentObjectStorage,
+  key: string,
+): Promise<AttachmentObjectStream | null> {
+  if (storage === 'r2') {
+    if (!env.FILES) throw new Error('R2 attachment storage is not configured')
+    const object = await env.FILES.get(key)
+    if (!object) return null
+    return {
+      body: object.body as ReadableStream<Uint8Array>,
+      size: object.size,
+      metadata: {
+        ...object.customMetadata,
+        mime: object.httpMetadata?.contentType,
+      },
+    }
+  }
+
+  if (!env.FILES_KV) throw new Error('KV attachment storage is not configured')
+  if (typeof env.FILES_KV.getWithMetadata !== 'function') {
+    const body = await env.FILES_KV.get(key, 'stream')
+    return body
+      ? { body: body as ReadableStream<Uint8Array>, size: null, metadata: null }
+      : null
+  }
+  const object = await env.FILES_KV.getWithMetadata<AttachmentObjectMetadata>(key, 'stream')
+  return object.value
+    ? {
+        body: object.value as ReadableStream<Uint8Array>,
+        size: null,
+        metadata: object.metadata,
+      }
+    : null
 }
 
 export async function deleteAttachmentObjects(

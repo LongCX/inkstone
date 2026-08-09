@@ -172,12 +172,20 @@ shareRoutes.post('/:slug', async (c) => {
     }
     const throttleKeys = [
       `share:${slug}:ip:${requestClientIp(c)}`,
+      { key: `share-slug:${slug}`, freeFails: 40 },
     ]
-    const workKeys = [{
-      key: `share-work:${slug}:ip:${requestClientIp(c)}`,
-      maxAttempts: 8,
-      windowMs: 10 * 60 * 1000,
-    }]
+    const workKeys = [
+      {
+        key: `share-work:${slug}:ip:${requestClientIp(c)}`,
+        maxAttempts: 8,
+        windowMs: 10 * 60 * 1000,
+      },
+      {
+        key: `share-work-slug:${slug}`,
+        maxAttempts: 60,
+        windowMs: 10 * 60 * 1000,
+      },
+    ]
     try {
       await consumeAttemptBudget(c.env.DB, workKeys)
       await assertNotLocked(c.env.DB, throttleKeys)
@@ -193,7 +201,10 @@ shareRoutes.post('/:slug', async (c) => {
       await recordLoginFailure(c.env.DB, throttleKeys)
       return c.json({ error: { code: 'password_invalid', message: "Incorrect passcode" } }, 401)
     }
-    await clearLoginFailures(c.env.DB, [...throttleKeys, workKeys[0]!.key])
+    await clearLoginFailures(c.env.DB, [
+      ...throttleKeys,
+      ...workKeys.map((target) => target.key),
+    ])
   }
 
   const note = await c.env.DB.prepare(

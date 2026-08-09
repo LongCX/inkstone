@@ -1,12 +1,12 @@
 import type { TestConnectionResult, WebdavConfig } from '@shared/types'
-import type { BackupFile } from './snapshot'
+import type { Snapshot } from './snapshot'
+import { backupArchivePath, createBackupArchive } from './archive'
 import {
   BACKUP_USER_AGENT,
   friendlyError,
   readResponseBytesWithinLimit,
   type DeliverResult,
 } from './common'
-import { forEachConcurrent } from './concurrency'
 import { normalizeBackupPrefix, parseBackupEndpoint } from './validation'
 
 export interface WebdavSecret {
@@ -47,6 +47,7 @@ async function webdavFetch(
   input: string | URL,
   init: RequestInit,
   trustedOrigin: string,
+  replayable = true,
 ): Promise<Response> {
   let current = new URL(input)
 
@@ -73,6 +74,9 @@ async function webdavFetch(
     }
 
     await response.body?.cancel().catch(() => {})
+    if (!replayable) {
+      throw new Error('WebDAV redirected the streaming upload. Enter the final WebDAV HTTPS URL and try again')
+    }
     current = next
   }
 
@@ -113,52 +117,68 @@ async function ensureDirs(
 export async function webdavDeliver(
   config: WebdavConfig,
   secret: WebdavSecret,
-  files: BackupFile[],
-  rootDir: string,
+  snapshot: Snapshot,
   signal?: AbortSignal,
 ): Promise<DeliverResult> {
   const base = baseUrl(config)
   const auth = authHeader(config, secret)
   const prefix = normalizeBackupPrefix(config.prefix ?? '')
+  const target = [prefix, backupArchivePath(snapshot)].filter(Boolean).join('/')
+  const targetDir = target.slice(0, target.lastIndexOf('/'))
+  await ensureDirs(base, auth, targetDir ? [targetDir] : [], new Set(), signal)
 
-  const created = new Set<string>()
-  const dirs = new Set<string>()
-  for (const file of files) {
-    const full = [prefix, rootDir, file.path].filter(Boolean).join('/')
-    const dir = full.slice(0, full.lastIndexOf('/'))
-    if (dir) dirs.add(dir)
+  const archive = createBackupArchive(snapshot)
+  if (await webdavObjectMatches(base, auth, target, archive.byteLengthNumber, signal)) {
+    await archive.stream.cancel().catch(() => {})
+    return { files: 1, bytes: archive.byteLengthNumber }
   }
-  await ensureDirs(base, auth, [...dirs].sort(), created, signal)
 
-  let bytes = 0
-  let count = 0
+  const fixed = new FixedLengthStream(archive.byteLength)
+  const pump = archive.stream.pipeTo(fixed.writable, { signal })
+  const upload = webdavFetch(childUrl(base, target), {
+    method: 'PUT',
+    headers: {
+      Authorization: auth,
+      'Content-Type': 'application/zip',
+      Overwrite: 'T',
+      'User-Agent': BACKUP_USER_AGENT,
+    },
+    body: fixed.readable as unknown as BodyInit,
+    signal,
+  }, base.origin, false)
+  const [response] = await Promise.all([upload, pump])
+  await response.body?.cancel().catch(() => {})
+  if (!response.ok) {
+    if (response.status === 401) throw new Error("Incorrect username or password")
+    if (response.status === 403) throw new Error('Write access is missing')
+    if (response.status === 404) throw new Error(`Path not found: ${target}`)
+    if (response.status === 507) throw new Error('The server is out of storage')
+    throw new Error(`Upload ${archive.filename} failed: HTTP ${response.status}`)
+  }
 
-  await forEachConcurrent(files, 3, async (file) => {
-    const target = [prefix, rootDir, file.path].filter(Boolean).join('/')
-    const res = await webdavFetch(childUrl(base, target), {
-      method: 'PUT',
-      headers: {
-        Authorization: auth,
-        'Content-Type': file.contentType,
-        Overwrite: 'T',
-        'User-Agent': BACKUP_USER_AGENT,
-      },
-      body: file.body as unknown as BodyInit,
-      signal,
-    }, base.origin)
-    await res.body?.cancel().catch(() => {})
-    if (!res.ok) {
-      if (res.status === 401) throw new Error("Incorrect username or password")
-      if (res.status === 403) throw new Error('Write access is missing')
-      if (res.status === 404) throw new Error(`Path not found: ${target}`)
-      if (res.status === 507) throw new Error('The server is out of storage')
-      throw new Error(`Upload ${file.path} failed: HTTP ${res.status}`)
-    }
-    bytes += file.body.byteLength
-    count++
-  })
+  return { files: 1, bytes: archive.byteLengthNumber }
+}
 
-  return { files: count, bytes }
+async function webdavObjectMatches(
+  base: URL,
+  auth: string,
+  target: string,
+  expectedBytes: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const response = await webdavFetch(childUrl(base, target), {
+    method: 'HEAD',
+    headers: { Authorization: auth, 'User-Agent': BACKUP_USER_AGENT },
+    signal,
+  }, base.origin)
+  await response.body?.cancel().catch(() => {})
+  if (response.status === 404) return false
+  if (response.status === 405 || response.status === 501) return false
+  if (response.status === 401) throw new Error('Incorrect username or password')
+  if (response.status === 403) throw new Error('Read access is missing')
+  if (!response.ok) throw new Error(`Checking ${target} failed: HTTP ${response.status}`)
+  const size = Number(response.headers.get('Content-Length'))
+  return size === expectedBytes
 }
 
 export async function webdavTest(
@@ -190,6 +210,8 @@ export async function webdavTest(
     const checkUrl = childUrl(base, checkPath)
     const payload = new TextEncoder().encode(`inkstone ${new Date().toISOString()}`)
     let written = false
+    let readWriteSucceeded = false
+    let primaryFailure: TestConnectionResult | null = null
     try {
       const put = await webdavFetch(checkUrl, {
         method: 'PUT',
@@ -212,24 +234,37 @@ export async function webdavTest(
       }, base.origin)
       if (!get.ok) {
         await get.body?.cancel().catch(() => {})
-        return { ok: false, message: `Write succeeded but read failed: HTTP ${get.status}` }
+        primaryFailure = { ok: false, message: `Write succeeded but read failed: HTTP ${get.status}` }
+        return primaryFailure
       }
       const downloaded = await readResponseBytesWithinLimit(get, 1024)
       if (!bytesEqual(downloaded, payload)) {
-        return { ok: false, message: 'The data read after writing did not match. Check the WebDAV gateway or proxy' }
+        primaryFailure = { ok: false, message: 'The data read after writing did not match. Check the WebDAV gateway or proxy' }
+        return primaryFailure
       }
 
+      readWriteSucceeded = true
       return { ok: true, message: 'Connection succeeded with read and write access', latencyMs: Date.now() - started }
     } finally {
       if (written) {
-        const removed = await webdavFetch(checkUrl, {
-          method: 'DELETE',
-          headers: { Authorization: auth, 'User-Agent': BACKUP_USER_AGENT },
-          signal: AbortSignal.timeout(5_000),
-        }, base.origin)
-        await removed.body?.cancel().catch(() => {})
-        if (!removed.ok && removed.status !== 404) {
-          throw new Error(`Read and write succeeded, but the test file could not be removed: HTTP ${removed.status}`)
+        let cleanupError: Error | null = null
+        try {
+          const removed = await webdavFetch(checkUrl, {
+            method: 'DELETE',
+            headers: { Authorization: auth, 'User-Agent': BACKUP_USER_AGENT },
+            signal: AbortSignal.timeout(5_000),
+          }, base.origin)
+          await removed.body?.cancel().catch(() => {})
+          if (!removed.ok && removed.status !== 404) {
+            cleanupError = new Error(`The test file could not be removed: HTTP ${removed.status}`)
+          }
+        } catch (error) {
+          cleanupError = new Error(`The test file could not be removed: ${friendlyError(error)}`)
+        }
+        if (cleanupError) {
+          if (readWriteSucceeded) throw cleanupError
+          if (primaryFailure) primaryFailure.message += `. ${cleanupError.message}`
+          console.warn('[inkstone] WebDAV test file cleanup failed:', cleanupError.message)
         }
       }
     }

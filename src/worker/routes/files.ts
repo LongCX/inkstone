@@ -81,7 +81,7 @@ filesRoutes.post('/', requireAuth, async (c) => {
   if (!(file instanceof File)) throw ApiError.badRequest('Missing file field')
 
   if (file.size > LIMITS.attachmentMaxBytes) {
-    throw ApiError.tooLarge('The file exceeds the 10 MB limit')
+    throw ApiError.tooLarge('The file exceeds the 25 MB limit')
   }
 
   const bytes = new Uint8Array(await file.arrayBuffer())

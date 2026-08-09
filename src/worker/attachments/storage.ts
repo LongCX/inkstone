@@ -49,7 +49,7 @@ export async function persistAttachment(
   input: PersistAttachmentInput,
 ): Promise<PersistedAttachment> {
   if (input.bytes.byteLength > LIMITS.attachmentMaxBytes) {
-    throw ApiError.tooLarge('The file exceeds the 10 MB limit')
+    throw ApiError.tooLarge('The file exceeds the 25 MB limit')
   }
   const storage = selectAttachmentStorage(env)
   if (!storage) {

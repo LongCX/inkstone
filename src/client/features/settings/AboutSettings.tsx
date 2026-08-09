@@ -22,6 +22,9 @@ export function AboutSettings() {
     const installed = usePwa((s) => s.installed);
     const installing = usePwa((s) => s.installing);
     const install = usePwa((s) => s.install);
+    const offlineStatus = usePwa((s) => s.offlineStatus);
+    const offlineCompleted = usePwa((s) => s.offlineCompleted);
+    const offlineTotal = usePwa((s) => s.offlineTotal);
     const loggingOutRef = useRef(false);
     const [loggingOut, setLoggingOut] = useState(false);
     const exit = async () => {
@@ -106,13 +109,31 @@ export function AboutSettings() {
         </div>
       </section>)}
 
-      {(installAvailable || installed) && (<section>
+      {(installAvailable || installed || offlineStatus !== 'idle') && (<section>
         <h3 className="mb-1 text-[11px] font-semibold tracking-[0.06em] text-[var(--text-quaternary)]">{t("pwa.app_installation")}</h3>
-        <SettingRow title={t("pwa.install_inkstone")} description={t("pwa.install_description")}>
-          {installed
-            ? <Badge tone="success">{t("pwa.installed")}</Badge>
-            : <Button size="sm" variant="secondary" icon={<Download size={13}/>} loading={installing} onClick={() => void install()}>{t("pwa.install")}</Button>}
-        </SettingRow>
+        {(installAvailable || installed) && (<SettingRow title={t("pwa.install_inkstone")} description={t("pwa.install_description")}>
+            {installed
+                ? <Badge tone="success">{t("pwa.installed")}</Badge>
+                : <Button size="sm" variant="secondary" icon={<Download size={13}/>} loading={installing} onClick={() => void install()}>{t("pwa.install")}</Button>}
+          </SettingRow>)}
+        {offlineStatus !== 'idle' && (<SettingRow
+          title={t("pwa.complete_offline_access")}
+          description={offlineStatus === 'ready'
+            ? t("pwa.complete_offline_ready_description")
+            : offlineStatus === 'error'
+                ? t("pwa.complete_offline_retry_description")
+                : t("pwa.complete_offline_preparing_description")}>
+          <Badge tone={offlineStatus === 'ready' ? 'success' : offlineStatus === 'error' ? 'warning' : 'neutral'}>
+            {offlineStatus === 'ready'
+                ? t("pwa.complete_offline_ready")
+                : offlineStatus === 'error'
+                    ? t("pwa.waiting_for_network")
+                    : t("pwa.preparing_progress", {
+                        completed: String(offlineCompleted),
+                        total: String(offlineTotal),
+                    })}
+          </Badge>
+        </SettingRow>)}
       </section>)}
 
       <section className="flex items-center justify-between rounded-[var(--r-lg)] border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">

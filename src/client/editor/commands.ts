@@ -369,7 +369,7 @@ export const insertTabs: StateCommand = ({ state, dispatch }) => {
     const range = state.selection.main;
     const selected = state.sliceDoc(range.from, range.to);
     const firstContent = selected ? `\n${selected}` : '';
-    const insert = `::: tabs\n@tab ${t("editor.tab_1")}${firstContent}\n\n@tab ${t("editor.tab_2")}\n\n:::\n`;
+    const insert = `:::: tabs\n::: tab-item ${t("editor.tab_1")}${firstContent}\n\n:::\n::: tab-item ${t("editor.tab_2")}\n\n:::\n::::\n`;
     const cursor = selected
         ? range.from + insert.indexOf(selected) + selected.length
         : range.from + insert.indexOf(t("editor.tab_1"));

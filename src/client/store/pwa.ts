@@ -11,6 +11,9 @@ interface PwaState {
   installAvailable: boolean
   installed: boolean
   installing: boolean
+  offlineStatus: 'idle' | 'preparing' | 'ready' | 'error'
+  offlineCompleted: number
+  offlineTotal: number
   install: () => Promise<void>
 }
 
@@ -18,11 +21,17 @@ let installPrompt: InstallPromptEvent | null = null
 let initialized = false
 let updateToastShown = false
 let reloadForUpdate = false
+let serviceWorkerRegistration: ServiceWorkerRegistration | null = null
+let warmupRequested = false
+let warmupScheduled = false
 
 export const usePwa = create<PwaState>((set) => ({
   installAvailable: false,
   installed: isStandalone(),
   installing: false,
+  offlineStatus: 'idle',
+  offlineCompleted: 0,
+  offlineTotal: 0,
 
   async install() {
     const prompt = installPrompt
@@ -55,10 +64,17 @@ export function initializePwa(): void {
 
   if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return
 
+  navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage)
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (reloadForUpdate) location.reload()
   })
+  window.addEventListener('online', scheduleOfflineWarmup)
   void registerServiceWorker()
+}
+
+export function requestOfflineWarmup(): void {
+  warmupRequested = true
+  scheduleOfflineWarmup()
 }
 
 async function registerServiceWorker(): Promise<void> {
@@ -68,6 +84,7 @@ async function registerServiceWorker(): Promise<void> {
       scope: '/',
       updateViaCache: 'none',
     })
+    serviceWorkerRegistration = registration
 
     if (registration.waiting && wasControlled) notifyUpdate(registration.waiting)
     registration.addEventListener('updatefound', () => {
@@ -80,18 +97,60 @@ async function registerServiceWorker(): Promise<void> {
     })
 
     const ready = await navigator.serviceWorker.ready
-    if (!wasControlled && ready.active) {
-      useUi.getState().toast({
-        title: t('pwa.offline_ready'),
-        description: t('pwa.offline_ready_description'),
-        tone: 'success',
-      })
-    }
+    serviceWorkerRegistration = ready
+    ready.active?.postMessage({ type: 'GET_OFFLINE_CACHE_STATUS' })
+    scheduleOfflineWarmup()
 
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) void registration.update().catch(() => {})
+      if (!document.hidden) {
+        void registration.update().catch(() => {})
+        scheduleOfflineWarmup()
+      }
     })
   } catch {
+  }
+}
+
+function scheduleOfflineWarmup(): void {
+  if (!warmupRequested || warmupScheduled || !navigator.onLine) return
+  const worker = serviceWorkerRegistration?.active ?? navigator.serviceWorker?.controller
+  if (!worker) return
+  warmupScheduled = true
+  const run = () => {
+    warmupScheduled = false
+    if (!warmupRequested || !navigator.onLine) return
+    worker.postMessage({ type: 'WARM_OFFLINE_CACHE' })
+  }
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
+  }
+  if (idleWindow.requestIdleCallback) idleWindow.requestIdleCallback(run, { timeout: 3_000 })
+  else window.setTimeout(run, 1_200)
+}
+
+function handleServiceWorkerMessage(event: MessageEvent): void {
+  const data = event.data as {
+    type?: string
+    status?: PwaState['offlineStatus']
+    completed?: number
+    total?: number
+    notify?: boolean
+  } | null
+  if (data?.type !== 'OFFLINE_CACHE_STATUS') return
+  if (!data.status || !['preparing', 'ready', 'error'].includes(data.status)) return
+  const completed = Math.max(0, Number(data.completed) || 0)
+  const total = Math.max(completed, Number(data.total) || 0)
+  usePwa.setState({
+    offlineStatus: data.status,
+    offlineCompleted: completed,
+    offlineTotal: total,
+  })
+  if (data.status === 'ready' && data.notify) {
+    useUi.getState().toast({
+      title: t('pwa.offline_ready'),
+      description: t('pwa.offline_ready_description'),
+      tone: 'success',
+    })
   }
 }
 

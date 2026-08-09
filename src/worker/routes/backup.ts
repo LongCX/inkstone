@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { LIMITS } from '@shared/constants'
 import { truncateText } from '@shared/text-utils'
 import type { BackupRun, BackupTargetInput, BackupTargetResult } from '@shared/types'
@@ -15,6 +15,7 @@ import { decryptSecret, encryptSecret } from '../lib/crypto'
 import { ApiError } from '../lib/errors'
 import { isValidId, newId } from '../lib/id'
 import { JSON_BODY_LIMITS, readJson, readOptionalJson } from '../lib/request'
+import { consumeAttemptBudget, ThrottleError } from '../lib/throttle'
 import { requireAuth } from '../middleware/auth'
 
 export const backupRoutes = new Hono<AppBindings>()
@@ -116,6 +117,7 @@ backupRoutes.delete('/targets/:id', async (c) => {
 
 
 backupRoutes.post('/targets/:id/test', async (c) => {
+  await enforceOutboundBudget(c, 'test')
   const target = await loadTarget(c.env.DB, c.get('userId'), c.req.param('id'))
   const override = await readJson<Partial<BackupTargetInput>>(c, JSON_BODY_LIMITS.backup)
   validateInputShape(override)
@@ -137,6 +139,7 @@ backupRoutes.post('/targets/:id/test', async (c) => {
 })
 
 backupRoutes.post('/test', async (c) => {
+  await enforceOutboundBudget(c, 'test')
   const body = await readJson<BackupTargetInput>(c, JSON_BODY_LIMITS.backup)
   validateInput(body, true)
   const draft: TargetRow = {
@@ -159,6 +162,7 @@ backupRoutes.post('/test', async (c) => {
 
 
 backupRoutes.post('/run', async (c) => {
+  await enforceOutboundBudget(c, 'run')
   const userId = c.get('userId')
   const body = await readOptionalJson<{ targetIds?: string[] }>(
     c,
@@ -214,6 +218,31 @@ backupRoutes.get('/runs', async (c) => {
   return c.json({ runs })
 })
 
+
+const OUTBOUND_BUDGETS = {
+  test: { maxAttempts: 20, windowMs: 10 * 60 * 1000, lockMs: 10 * 60 * 1000 },
+  run: { maxAttempts: 30, windowMs: 60 * 60 * 1000, lockMs: 60 * 60 * 1000 },
+} as const
+
+async function enforceOutboundBudget(
+  c: Context<AppBindings>,
+  kind: keyof typeof OUTBOUND_BUDGETS,
+): Promise<void> {
+  const budget = OUTBOUND_BUDGETS[kind]
+  try {
+    await consumeAttemptBudget(c.env.DB, [{ key: `backup-${kind}:${c.get('userId')}`, ...budget }])
+  } catch (error) {
+    if (error instanceof ThrottleError) {
+      throw new ApiError(
+        429,
+        'too_many_attempts',
+        `Too many backup requests. Try again in ${error.retryAfterSec} seconds`,
+        { retryAfter: error.retryAfterSec },
+      )
+    }
+    throw error
+  }
+}
 
 async function loadTarget(db: D1Database, userId: string, id: string): Promise<TargetRow> {
   const row = await db
@@ -287,7 +316,7 @@ function pickSecret(body: BackupTargetInput): Record<string, string> {
 
 function normalizeConfig(body: BackupTargetInput): Record<string, unknown> {
   const c = body.config ?? {}
-  const mode = c.mode === 'mirror' ? 'mirror' : 'archive'
+  const mode = 'archive'
   if (body.type === 's3') {
     return {
       endpoint: str(c.endpoint),

@@ -20,7 +20,7 @@ const ACCENT_MESSAGE_KEYS: Record<AccentName, MessageKey> = {
 export function AppearanceSettings({
   accents,
 }: {
-  accents: { name: AccentName; swatch: string }[]
+  accents: { name: AccentName; swatch: string; foreground: string }[]
 }) {
   const settings = useSession((s) => s.settings)
   const update = useSession((s) => s.updateSettings)
@@ -70,10 +70,10 @@ export function AppearanceSettings({
                     'hover:scale-110 active:scale-95',
                     appearance.accent === accent.name && 'ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg-overlay)]',
                   )}
-                  style={{ background: accent.swatch }}
+                  style={{ background: accent.swatch, color: accent.foreground }}
                 >
                   {appearance.accent === accent.name && (
-                    <Check size={12} strokeWidth={3} className="text-white drop-shadow-sm" />
+                    <Check size={12} strokeWidth={3} className="drop-shadow-sm" />
                   )}
                 </button>
               </Tooltip>

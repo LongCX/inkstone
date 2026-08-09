@@ -1,4 +1,5 @@
 import { CLIENT_HEADER } from '@shared/constants'
+import type { MarkdownBackupManifest } from '@shared/backup-format'
 import type {
   AppLocale,
   Attachment,
@@ -166,7 +167,7 @@ function isJsonResponse(response: Response): boolean {
   return mediaType === 'application/json' || Boolean(mediaType?.endsWith('+json'))
 }
 
-async function download(path: string, fallbackName: string): Promise<{ blob: Blob; filename: string }> {
+async function fetchDownload(path: string, fallbackName: string): Promise<{ response: Response; filename: string }> {
   let response: Response
   try {
     response = await fetch(path, {
@@ -198,14 +199,50 @@ async function download(path: string, fallbackName: string): Promise<{ blob: Blo
 
   const disposition = response.headers.get('Content-Disposition') ?? ''
   const filename = /filename="([^"\r\n]+)"/i.exec(disposition)?.[1] ?? fallbackName
-  return { blob: await response.blob(), filename }
+  return { response, filename }
 }
 
 async function saveDownload(format: 'json' | 'zip'): Promise<void> {
-  const { blob, filename } = await download(
-    `/api/export?format=${format}`,
-    `inkstone-export.${format}`,
-  )
+  if (format === 'zip') {
+    const picker = (window as Window & {
+      showSaveFilePicker?: (options: {
+        suggestedName: string
+        types: Array<{ description: string; accept: Record<string, string[]> }>
+      }) => Promise<FileSystemFileHandle>
+    }).showSaveFilePicker
+    if (picker) {
+      let handle: FileSystemFileHandle
+      try {
+        handle = await picker.call(window, {
+          suggestedName: `inkstone-backup-${new Date().toISOString().replace(/[-:TZ]/g, '').slice(0, 15)}.zip`,
+          types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }],
+        })
+      } catch (error) {
+        if ((error as Error)?.name === 'AbortError') return
+        throw error
+      }
+      const { response } = await fetchDownload('/api/export?format=zip', 'inkstone-backup.zip')
+      if (!response.body) throw new ApiError(0, 'unknown', t('api.no_network_connection'))
+      const writable = await handle.createWritable()
+      await response.body.pipeTo(writable)
+      return
+    }
+
+    const anchor = document.createElement('a')
+    anchor.href = '/api/export?format=zip'
+    anchor.download = 'inkstone-backup.zip'
+    anchor.style.display = 'none'
+    document.body.append(anchor)
+    try {
+      anchor.click()
+    } finally {
+      anchor.remove()
+    }
+    return
+  }
+
+  const { response, filename } = await fetchDownload('/api/export?format=json', 'inkstone-export.json')
+  const blob = await response.blob()
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
@@ -406,10 +443,18 @@ export const api = {
 
   transfer: {
     save: saveDownload,
-    import: (files: File[], conflict: 'skip' | 'newer' | 'duplicate' = 'newer') => {
+    import: (
+      files: File[],
+      conflict: 'skip' | 'newer' | 'duplicate' = 'newer',
+      backup?: { manifest: MarkdownBackupManifest; paths: string[] },
+    ) => {
       const form = new FormData()
       for (const file of files) form.append('file', file)
       form.append('conflict', conflict)
+      if (backup) {
+        form.append('backupManifest', JSON.stringify(backup.manifest))
+        form.append('backupPaths', JSON.stringify(backup.paths))
+      }
       return request<ImportResult>('/api/import', { method: 'POST', formData: form })
     },
   },

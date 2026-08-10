@@ -11,7 +11,7 @@ export class CryptoUnavailableError extends ApiError {
     super(
       503,
       'server_misconfigured',
-      'The server is missing the CREDENTIAL_VAULT Durable Object binding and cannot store backup credentials safely',
+      'The server is missing the CREDENTIAL_VAULT Durable Object binding and cannot store sensitive credentials safely',
     )
     this.name = 'CryptoUnavailableError'
   }
@@ -19,7 +19,36 @@ export class CryptoUnavailableError extends ApiError {
 
 export async function encryptSecret(env: Env, info: string, value: unknown): Promise<string> {
   if (!isValidId(info)) throw new Error('invalid_credential_scope')
-  const response = await vaultRequest(env, '/encrypt', { scope: `backup:${info}`, value })
+  return encryptCredential(env, `backup:${info}`, value)
+}
+
+export async function decryptSecret<T>(env: Env, info: string, stored: string): Promise<T | null> {
+  if (!isValidId(info) || stored.length > 24 * 1024) return null
+  const value = await decryptCredential(env, `backup:${info}`, stored)
+  return isBackupCredentialRecord(value) ? (value as T) : null
+}
+
+export async function encryptTotpSecret(env: Env, userId: string, secret: string): Promise<string> {
+  if (!isValidId(userId) || !/^[A-Z2-7]{32}$/.test(secret)) {
+    throw new Error('invalid_totp_credential')
+  }
+  return encryptCredential(env, `totp:${userId}`, { secret })
+}
+
+export async function decryptTotpSecret(
+  env: Env,
+  userId: string,
+  stored: string,
+): Promise<string | null> {
+  if (!isValidId(userId) || stored.length > 24 * 1024) return null
+  const value = await decryptCredential(env, `totp:${userId}`, stored)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const secret = (value as Record<string, unknown>).secret
+  return typeof secret === 'string' && /^[A-Z2-7]{32}$/.test(secret) ? secret : null
+}
+
+async function encryptCredential(env: Env, scope: string, value: unknown): Promise<string> {
+  const response = await vaultRequest(env, '/encrypt', { scope, value })
   if (!response.ok) throw new CryptoUnavailableError()
   const body: unknown = await response.json().catch(() => null)
   const ciphertext = readStringField(body, 'ciphertext')
@@ -27,19 +56,14 @@ export async function encryptSecret(env: Env, info: string, value: unknown): Pro
   return ciphertext
 }
 
-export async function decryptSecret<T>(env: Env, info: string, stored: string): Promise<T | null> {
-  if (!isValidId(info) || stored.length > 24 * 1024) return null
+async function decryptCredential(env: Env, scope: string, stored: string): Promise<unknown> {
   try {
-    const response = await vaultRequest(env, '/decrypt', {
-      scope: `backup:${info}`,
-      ciphertext: stored,
-    })
+    const response = await vaultRequest(env, '/decrypt', { scope, ciphertext: stored })
     if (response.status === 422) return null
     if (!response.ok) throw new CryptoUnavailableError()
     const body: unknown = await response.json().catch(() => null)
     if (!body || typeof body !== 'object' || Array.isArray(body) || !('value' in body)) return null
-    const value = (body as { value: unknown }).value
-    return isCredentialRecord(value) ? (value as T) : null
+    return (body as { value: unknown }).value
   } catch (error) {
     if (error instanceof CryptoUnavailableError) throw error
     throw new CryptoUnavailableError()
@@ -67,7 +91,7 @@ function readStringField(value: unknown, key: string): string | null {
   return typeof field === 'string' ? field : null
 }
 
-function isCredentialRecord(value: unknown): value is Record<string, string> {
+function isBackupCredentialRecord(value: unknown): value is Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const allowed = new Set(['password', 'accessKeyId', 'secretAccessKey'])
   const entries = Object.entries(value)

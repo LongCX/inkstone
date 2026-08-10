@@ -131,12 +131,10 @@
 
 
 .ink-prose ul.contains-task-list,
-.ink-prose ol.contains-task-list,
-.ink-prose li.task-list-item {
+.ink-prose ul.contains-task-list > li.task-list-item {
   list-style: none;
 }
-.ink-prose ul.contains-task-list,
-.ink-prose ol.contains-task-list {
+.ink-prose ul.contains-task-list {
   padding-inline-start: 0.15em;
 }
 .ink-prose .task-list-item {
@@ -144,6 +142,12 @@
   grid-template-columns: auto minmax(0, 1fr);
   align-items: flex-start;
   gap: 0.45em;
+}
+.ink-prose ol.contains-task-list > li.task-list-item {
+  display: list-item;
+}
+.ink-prose ol.contains-task-list > li.task-list-item > input[type='checkbox'] {
+  margin-inline-end: 0.45em;
 }
 .ink-prose .task-list-item > p {
   margin: 0;

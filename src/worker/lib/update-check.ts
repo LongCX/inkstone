@@ -82,10 +82,19 @@ async function fetchRepositoryVersion(
     return { kind: 'failure', reason: 'response_too_large' }
   }
 
-  const text = await response.text()
-  if (new TextEncoder().encode(text).byteLength > MAX_PACKAGE_RESPONSE_BYTES) {
-    return { kind: 'failure', reason: 'response_too_large' }
+  let text: string | null
+  try {
+    text = await readResponseTextWithinLimit(response, MAX_PACKAGE_RESPONSE_BYTES)
+  } catch (error) {
+    return {
+      kind: 'failure',
+      reason: 'body_read_error',
+      detail: error instanceof Error
+        ? `${error.name}: ${error.message}`.slice(0, 240)
+        : typeof error,
+    }
   }
+  if (text === null) return { kind: 'failure', reason: 'response_too_large' }
 
   try {
     const body = JSON.parse(text) as { version?: unknown }
@@ -95,4 +104,36 @@ async function fetchRepositoryVersion(
   } catch {
     return { kind: 'failure', reason: 'invalid_json' }
   }
+}
+
+async function readResponseTextWithinLimit(
+  response: Response,
+  limit: number,
+): Promise<string | null> {
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > limit) {
+        await reader.cancel().catch(() => {})
+        return null
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
 }

@@ -49,9 +49,15 @@ interface SessionUserRow extends UserRow {
 
 export const loadSession = createMiddleware<AppBindings>(async (c, next) => {
   const cookieNames = sessionCookieNames(c.req.url)
-  const token = cookieNames.map((name) => getCookie(c, name)).find(Boolean)
+  const candidates = cookieNames
+    .map((name) => ({ name, token: getCookie(c, name) }))
+    .filter((candidate): candidate is { name: string; token: string } => Boolean(candidate.token))
+  const seenTokens = new Set<string>()
+  let authenticated = false
 
-  if (token && isSessionToken(token)) {
+  for (const { name, token } of candidates) {
+    if (!isSessionToken(token) || seenTokens.has(token)) continue
+    seenTokens.add(token)
     const row = await c.env.DB.prepare(
       `SELECT ${USER_COLUMNS_ALIASED}, s.id AS session_id, s.expires_at
          FROM sessions s LEFT JOIN users u ON u.id = s.user_id
@@ -63,15 +69,21 @@ export const loadSession = createMiddleware<AppBindings>(async (c, next) => {
     if (row?.session_id) {
       if (!row.id) {
         await destroySession(c.env.DB, token)
-        clearSessionCookie(c)
+        continue
       } else {
         c.set('user', rowToUser(row))
         c.set('userId', row.id)
         c.set('sessionId', row.session_id)
 
-        if (row.expires_at - Date.now() < SESSION_RENEW_BEFORE_MS) {
+        const shouldRenew = row.expires_at - Date.now() < SESSION_RENEW_BEFORE_MS
+        if (shouldRenew) {
           await renewSession(c.env.DB, row.session_id)
+        }
+        if (shouldRenew || name === LEGACY_SESSION_COOKIE) {
           writeSessionCookie(c, token)
+        }
+        if (new URL(c.req.url).protocol === 'https:' && getCookie(c, LEGACY_SESSION_COOKIE)) {
+          clearLegacySessionCookie(c)
         }
         const now = Date.now()
         c.executionCtx?.waitUntil(
@@ -80,11 +92,12 @@ export const loadSession = createMiddleware<AppBindings>(async (c, next) => {
             .run()
             .catch(() => {}),
         )
+        authenticated = true
+        break
       }
-    } else {
-      clearSessionCookie(c)
     }
   }
+  if (candidates.length && !authenticated) clearSessionCookie(c)
 
   await next()
 })
@@ -133,6 +146,16 @@ export function clearSessionCookie(c: Context<AppBindings>): void {
       secure,
     })
   }
+}
+
+function clearLegacySessionCookie(c: Context<AppBindings>): void {
+  setCookie(c, LEGACY_SESSION_COOKIE, '', {
+    path: '/',
+    httpOnly: true,
+    maxAge: 0,
+    sameSite: 'Lax',
+    secure: new URL(c.req.url).protocol === 'https:',
+  })
 }
 
 export function sessionCookieNames(requestUrl: string): string[] {

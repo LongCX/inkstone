@@ -37,6 +37,39 @@ export interface SessionInfo {
   settings: UserSettings | null
 }
 
+export interface TotpLoginChallenge {
+  twoFactorRequired: true
+  challengeToken: string
+  expiresAt: number
+}
+
+export type PasswordLoginResult = SessionInfo | TotpLoginChallenge
+
+export type TotpLoginResult = SessionInfo & {
+  recoveryCodeUsed: boolean
+  recoveryCodesRemaining: number | null
+}
+
+export interface TotpStatus {
+  available: boolean
+  enabled: boolean
+  enabledAt: number | null
+  recoveryCodesRemaining: number
+}
+
+export interface TotpSetupInfo {
+  setupToken: string
+  secret: string
+  uri: string
+  expiresAt: number
+}
+
+export interface TotpRecoveryCodesResult {
+  recoveryCodes: string[]
+  recoveryCodesRemaining: number
+  generatedAt: number
+}
+
 export type UpdateCheckStatus = 'ok' | 'unavailable'
 
 export interface UpdateCheckResponse {
@@ -326,6 +359,7 @@ export interface SyncResponse {
 
   settingsChanged: boolean
   profileChanged?: boolean
+  siteChanged?: boolean
   notes: NoteSummary[]
   folders: Folder[]
   tags: Tag[]
@@ -385,6 +419,10 @@ export interface BackupTargetInput {
     accessKeyId?: string
     secretAccessKey?: string
   }
+}
+
+export type BackupTargetPatchInput = Partial<BackupTargetInput> & {
+  expectedUpdatedAt?: number
 }
 
 export interface BackupTargetResult {
@@ -549,7 +587,13 @@ export type ApiErrorCode =
   | 'weak_password'
   | 'username_taken'
   | 'invalid_credentials'
+  | 'invalid_two_factor_code'
   | 'wrong_password'
   | 'too_many_attempts'
   | 'registration_closed'
   | 'server_misconfigured'
+  | 'two_factor_already_enabled'
+  | 'two_factor_challenge_expired'
+  | 'two_factor_not_enabled'
+  | 'two_factor_setup_expired'
+  | 'two_factor_unavailable'

@@ -549,6 +549,7 @@ md.renderer.rules.image = (tokens, index, options, env, self) => {
     const token = tokens[index]!;
     token.attrSet('loading', 'lazy');
     token.attrSet('decoding', 'async');
+    token.attrSet('referrerpolicy', 'no-referrer');
     const title = token.attrGet('title');
     const rendered = defaultImage
         ? defaultImage(tokens, index, options, env, self)
@@ -619,6 +620,7 @@ const PURIFY_CONFIG = {
         'target',
         'loading',
         'decoding',
+        'referrerpolicy',
         'align',
         'colspan',
         'rowspan',

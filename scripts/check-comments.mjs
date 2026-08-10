@@ -62,12 +62,12 @@ const allowed = new Map([
     "/** Workers AI binding for semantic search; optional so AI search degrades gracefully. */",
   ]],
   ["src/worker/index.ts", [
-    "// Codex CLI drops the `iss`/`issuer` callback parameter while its rmcp",
+    "// Codex CLI drops the `iss` callback parameter while its rmcp",
     "// dependency enforces it whenever the authorization server advertises",
     "// `authorization_response_iss_parameter_supported` (openai/codex#31573), so",
     "// login fails even though the parameter is on the wire. Serve the metadata",
-    "// without that flag to keep codex compatible; `iss`/`issuer` are still",
-    "// appended to callbacks for conforming clients such as Claude Code.",
+    "// without that flag to keep codex compatible; the standard RFC 9207 `iss`",
+    "// parameter is still appended to callbacks for conforming clients.",
   ]],
   ["src/worker/lib/request.ts", [
     "// CF-Connecting-IP is injected by the Cloudflare edge and cannot be",

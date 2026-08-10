@@ -8,6 +8,8 @@ import { forEachConcurrent } from './concurrency'
 import { runBackup } from './engine'
 
 const USER_PAGE_SIZE = 100
+const BACKUP_SCHEDULE_EARLY_TOLERANCE_MS = 5 * 60 * 1000
+const BACKUP_RETRY_INTERVAL_MS = 60 * 60 * 1000
 const CHANGE_LOG_TRIM_INTERVAL_MS = 24 * 60 * 60 * 1000
 const CHANGE_LOG_TRIM_META_KEY = 'change-log-trim-last-success-v1'
 const CHANGE_LOG_TRIM_LEASE_KEY = 'change-log-trim-lease-v1'
@@ -28,7 +30,10 @@ export async function runScheduledBackups(env: Env): Promise<void> {
   while (true) {
     const { results: users } = await env.DB.prepare(
       `SELECT u.id, u.settings,
-              (SELECT MAX(br.started_at) FROM backup_runs br WHERE br.user_id = u.id) AS last_at
+              (SELECT MAX(br.started_at) FROM backup_runs br
+                WHERE br.user_id = u.id) AS last_attempt_at,
+              (SELECT MAX(br.started_at) FROM backup_runs br
+                WHERE br.user_id = u.id AND br.status = 'success') AS last_success_at
          FROM users u
         WHERE u.id > ?1
           AND EXISTS (
@@ -37,7 +42,12 @@ export async function runScheduledBackups(env: Env): Promise<void> {
         ORDER BY u.id LIMIT ?2`,
     )
       .bind(afterUserId, USER_PAGE_SIZE)
-      .all<{ id: string; settings: string; last_at: number | null }>()
+      .all<{
+        id: string
+        settings: string
+        last_attempt_at: number | null
+        last_success_at: number | null
+      }>()
     if (users.length === 0) break
 
     await forEachConcurrent(users, 2, async (user) => {
@@ -47,7 +57,12 @@ export async function runScheduledBackups(env: Env): Promise<void> {
         if (!interval) return
 
 
-        if (user.last_at && now - user.last_at < interval - 5 * 60 * 1000) return
+        if (!isScheduledBackupDue(
+          interval,
+          user.last_success_at,
+          user.last_attempt_at,
+          now,
+        )) return
 
         const run = await runBackup(env, user.id, { trigger: 'cron' })
         console.log(
@@ -67,6 +82,19 @@ export async function runScheduledBackups(env: Env): Promise<void> {
   } catch (error) {
     console.warn('[inkstone] Failed to trim the change log:', error)
   }
+}
+
+function isScheduledBackupDue(
+  interval: number,
+  lastSuccessAt: number | null,
+  lastAttemptAt: number | null,
+  now: number,
+): boolean {
+  if (interval <= 0) return false
+  const successDelay = Math.max(0, interval - BACKUP_SCHEDULE_EARLY_TOLERANCE_MS)
+  if (lastSuccessAt !== null && now - lastSuccessAt < successDelay) return false
+  const retryDelay = Math.min(successDelay, BACKUP_RETRY_INTERVAL_MS)
+  return lastAttemptAt === null || now - lastAttemptAt >= retryDelay
 }
 
 async function trimChangeLogIfDue(env: Env, now: number): Promise<void> {
@@ -110,10 +138,12 @@ async function trimChangeLog(env: Env): Promise<void> {
     if (results.length === 0) break
     for (const row of results) {
       await env.DB.prepare(
-        `DELETE FROM changes WHERE user_id = ?1 AND seq < (
-           SELECT MIN(seq) FROM (
-             SELECT seq FROM changes WHERE user_id = ?1 ORDER BY seq DESC LIMIT ?2
-           )
+        `DELETE FROM changes WHERE seq IN (
+           SELECT seq FROM changes WHERE user_id = ?1 AND seq < (
+             SELECT MIN(seq) FROM (
+               SELECT seq FROM changes WHERE user_id = ?1 ORDER BY seq DESC LIMIT ?2
+             )
+           ) ORDER BY seq LIMIT 1000
          )`,
       )
         .bind(row.user_id, LIMITS.changeLogKept)

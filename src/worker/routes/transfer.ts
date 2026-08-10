@@ -17,7 +17,7 @@ import { truncateText, utf8ByteLength } from '@shared/text-utils'
 import { organizerColorOrNull } from '@shared/organizer-colors'
 import type { ExportBundle, ImportResult } from '@shared/types'
 import {
-  persistAttachment,
+  persistAttachmentWithinQuota,
   rollbackPersistedAttachments,
   type PersistedAttachment,
 } from '../attachments/storage'
@@ -486,7 +486,7 @@ async function importBackupAttachment(
     return
   }
 
-  const persisted = await persistAttachment(env, {
+  const persisted = await persistAttachmentWithinQuota(env, {
     id: newId(),
     userId,
     noteId: null,
@@ -944,6 +944,11 @@ async function prepareBundleAttachments(
     userId,
     candidates.map((candidate) => candidate.sourceId),
   )
+  const pendingCleanupIds = await loadPendingAttachmentCleanupIds(
+    env.DB,
+    userId,
+    candidates.map((candidate) => candidate.sourceId),
+  )
   const idMap = new Map<string, string>()
   const created: CreatedImportedAttachment[] = []
   const reservedIds = new Set([...existingAttachments.values()].map((attachment) => attachment.id))
@@ -961,7 +966,11 @@ async function prepareBundleAttachments(
         addWarning(ctx.result, `${candidate.filename}: an existing attachment with this ID has different content, so a new attachment was restored`)
       }
 
-      let destinationId = existing ? newId() : candidate.sourceId
+      const pendingOldObject = pendingCleanupIds.has(candidate.sourceId)
+      let destinationId = existing || pendingOldObject ? newId() : candidate.sourceId
+      if (!existing && pendingOldObject) {
+        addWarning(ctx.result, `${candidate.filename}: restored with a new internal ID while old attachment bytes await cleanup`)
+      }
       while (
         reservedIds.has(destinationId) ||
         (destinationId !== candidate.sourceId && sourceIds.has(destinationId))
@@ -971,7 +980,7 @@ async function prepareBundleAttachments(
       reservedIds.add(destinationId)
       idMap.set(candidate.sourceId, destinationId)
 
-      const persisted = await persistAttachment(env, {
+      const persisted = await persistAttachmentWithinQuota(env, {
         id: destinationId,
         userId,
         noteId: null,
@@ -1051,6 +1060,34 @@ async function loadExistingAttachments(
     }
   }
   return attachments
+}
+
+async function loadPendingAttachmentCleanupIds(
+  db: D1Database,
+  userId: string,
+  sourceIds: readonly string[],
+): Promise<Set<string>> {
+  const prefixes = [`r2:${userId}/`, `kv:${userId}/`]
+  const ids = new Set<string>()
+  if (!sourceIds.length) return ids
+  const { results } = await db.prepare(
+    `SELECT object_key FROM attachment_cleanup
+      WHERE user_id = ?1
+        AND substr(object_key, 4, length(?1) + 1) = ?1 || '/'
+        AND substr(object_key, length(?1) + 5, 26) IN (
+          SELECT value FROM json_each(?2)
+        )
+        AND substr(object_key, length(?1) + 31, 1) = '.'`,
+  ).bind(userId, JSON.stringify(sourceIds)).all<{ object_key: string }>()
+  for (const row of results) {
+    const prefix = prefixes.find((candidate) => row.object_key.startsWith(candidate))
+    if (!prefix) continue
+    const filename = row.object_key.slice(prefix.length)
+    const separator = filename.indexOf('.')
+    const id = separator > 0 ? filename.slice(0, separator) : ''
+    if (isValidId(id)) ids.add(id)
+  }
+  return ids
 }
 
 async function existingAttachmentMatches(
@@ -1228,7 +1265,7 @@ async function importMarkdown(
       const asset = findObsidianAsset(ctx.assets, reference, assetDir)
       if (!asset) continue
       try {
-        const persisted = await persistAttachment(c.env, {
+        const persisted = await persistAttachmentWithinQuota(c.env, {
           id: newId(),
           userId,
           noteId: null,
@@ -1290,7 +1327,7 @@ async function updateImportedNote(
   ctx: ImportContext,
 ): Promise<'updated' | 'skipped' | 'conflict' | 'missing'> {
   const current = await c.env.DB.prepare(
-    `SELECT id, title, content, rev, position, is_pinned, is_starred,
+    `SELECT id, title, content, rev, position, is_pinned, is_starred, is_archived,
             created_at, updated_at, deleted_at
        FROM notes WHERE id = ?1 AND user_id = ?2`,
   ).bind(existing.id, userId).first<{
@@ -1301,6 +1338,7 @@ async function updateImportedNote(
     position: number
     is_pinned: number
     is_starred: number
+    is_archived: number
     created_at: number
     updated_at: number
     deleted_at: number | null
@@ -1335,7 +1373,7 @@ async function updateImportedNote(
     input.folderId,
     input.isPinned === undefined ? current.is_pinned : input.isPinned ? 1 : 0,
     input.isStarred === undefined ? current.is_starred : input.isStarred ? 1 : 0,
-    input.isArchived === true ? 1 : 0,
+    input.isArchived === undefined ? current.is_archived : input.isArchived ? 1 : 0,
     position,
     createdAt,
     updatedAt,

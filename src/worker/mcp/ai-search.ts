@@ -10,7 +10,7 @@
  */
 import { toPlainText } from '@shared/markdown-utils'
 import { truncateText } from '@shared/text-utils'
-import { getMeta, setMeta } from '../db/metadata'
+import { getMeta, selectQueueUsersRoundRobin, setMeta } from '../db/metadata'
 import type { Env } from '../env'
 
 export const AI_EMBEDDING_MODEL = '@cf/baai/bge-m3'
@@ -20,6 +20,7 @@ const MAX_SEMANTIC_VECTORS = 8_000
 const SEMANTIC_TOP_K = 40
 const DRAIN_USERS_PER_RUN = 10
 const DRAIN_PER_USER = 25
+const AI_DRAIN_CURSOR_META_KEY = 'ai-index-drain-user-v1'
 const ENQUEUE_CHUNK = 200
 export const RRF_K = 60
 
@@ -123,15 +124,25 @@ export async function enqueueNoteIndex(
   kind: AiIndexKind,
   now = Date.now(),
 ): Promise<void> {
+  await noteIndexQueueStatement(db, userId, noteId, kind, now).run()
+}
+
+export function noteIndexQueueStatement(
+  db: D1Database,
+  userId: string,
+  noteId: string,
+  kind: AiIndexKind,
+  now = Date.now(),
+): D1PreparedStatement {
   const guard = kind === 'embed'
     ? ` WHERE EXISTS (SELECT 1 FROM app_meta WHERE key = ?5 AND value = '1')`
     : ''
-  await db.prepare(
+  return db.prepare(
     `INSERT OR REPLACE INTO ai_index_queue (user_id, note_id, kind, created_at)
      SELECT ?1, ?2, ?3,
        MAX(?4, COALESCE((SELECT created_at + 1 FROM ai_index_queue
          WHERE user_id = ?1 AND note_id = ?2), ?4))${guard}`,
-  ).bind(userId, noteId, kind, now, aiSearchPrefKey(userId)).run()
+  ).bind(userId, noteId, kind, now, aiSearchPrefKey(userId))
 }
 
 export async function enqueueAllNotesForIndex(
@@ -139,20 +150,33 @@ export async function enqueueAllNotesForIndex(
   userId: string,
   now = Date.now(),
 ): Promise<number> {
-  const { results } = await db.prepare(
-    `SELECT id FROM notes WHERE user_id = ?1 AND deleted_at IS NULL`,
-  ).bind(userId).all<{ id: string }>()
-  for (let start = 0; start < results.length; start += ENQUEUE_CHUNK) {
-    const chunk = results.slice(start, start + ENQUEUE_CHUNK)
-    const statements = chunk.map(({ id }) => db.prepare(
+  const boundary = await db.prepare(
+    `SELECT MAX(id) AS id FROM notes WHERE user_id = ?1 AND deleted_at IS NULL`,
+  ).bind(userId).first<{ id: string | null }>()
+  const lastId = boundary?.id
+  if (!lastId) return 0
+
+  let cursor = ''
+  let enqueued = 0
+  while (cursor < lastId) {
+    const { results } = await db.prepare(
+      `SELECT id FROM notes
+        WHERE user_id = ?1 AND deleted_at IS NULL AND id > ?2 AND id <= ?3
+        ORDER BY id ASC LIMIT ?4`,
+    ).bind(userId, cursor, lastId, ENQUEUE_CHUNK).all<{ id: string }>()
+    if (!results.length) break
+
+    const statements = results.map(({ id }) => db.prepare(
       `INSERT OR REPLACE INTO ai_index_queue (user_id, note_id, kind, created_at)
        SELECT ?1, ?2, 'embed',
          MAX(?3, COALESCE((SELECT created_at + 1 FROM ai_index_queue
            WHERE user_id = ?1 AND note_id = ?2), ?3))`,
     ).bind(userId, id, now))
     await db.batch(statements)
+    enqueued += results.length
+    cursor = results[results.length - 1]!.id
   }
-  return results.length
+  return enqueued
 }
 
 export async function clearAiIndex(db: D1Database, userId: string): Promise<number> {
@@ -174,18 +198,23 @@ export async function clearAiIndex(db: D1Database, userId: string): Promise<numb
  */
 export async function drainAiIndexQueue(env: Env, max: number): Promise<{ processed: number }> {
   if (!env.AI) return { processed: 0 }
+  const budget = Math.max(0, Math.trunc(max))
+  if (!Number.isFinite(budget) || budget === 0) return { processed: 0 }
   let processed = 0
-  const { results: users } = await env.DB.prepare(
-    `SELECT DISTINCT user_id FROM ai_index_queue LIMIT ?1`,
-  ).bind(DRAIN_USERS_PER_RUN).all<{ user_id: string }>()
-  for (const { user_id } of users) {
-    if (processed >= max) break
+  const users = await selectQueueUsersRoundRobin(
+    env.DB,
+    'ai_index_queue',
+    AI_DRAIN_CURSOR_META_KEY,
+    Math.min(DRAIN_USERS_PER_RUN, Math.ceil(budget / DRAIN_PER_USER)),
+  )
+  for (const user_id of users) {
+    if (processed >= budget) break
     if (!await isAiSearchEnabled(env.DB, user_id)) {
       // The account turned AI search off; its queue would otherwise grow forever.
       await env.DB.prepare(`DELETE FROM ai_index_queue WHERE user_id = ?1`).bind(user_id).run()
       continue
     }
-    processed += await drainUserQueue(env, user_id, Math.min(max - processed, DRAIN_PER_USER))
+    processed += await drainUserQueue(env, user_id, Math.min(budget - processed, DRAIN_PER_USER))
   }
   return { processed }
 }
@@ -414,12 +443,13 @@ function semanticWhere(userId: string, filters: SemanticFilters): { binds: unkno
   for (const tag of filters.tags ?? []) {
     binds.push(tag)
     where += ` AND EXISTS (SELECT 1 FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
-        WHERE nt.note_id = n.id AND t.name = ?${binds.length})`
+        WHERE nt.note_id = n.id AND t.user_id = n.user_id
+          AND t.name = ?${binds.length} COLLATE NOCASE)`
   }
   if (filters.folder) {
     binds.push(filters.folder)
     where += ` AND EXISTS (SELECT 1 FROM folders f WHERE f.id = n.folder_id
-        AND f.name = ?${binds.length} AND f.user_id = n.user_id)`
+        AND f.name = ?${binds.length} COLLATE NOCASE AND f.user_id = n.user_id)`
   }
   return { binds, where }
 }

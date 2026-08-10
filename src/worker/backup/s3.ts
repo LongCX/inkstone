@@ -111,7 +111,7 @@ async function s3ArchiveMatches(
     signal,
     redirect: 'manual',
   })
-  if (response.status === 404) {
+  if (response.status === 403 || response.status === 404) {
     await response.body?.cancel().catch(() => {})
     return false
   }

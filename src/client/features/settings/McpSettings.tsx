@@ -161,6 +161,7 @@ export function McpSettings() {
   }
 
   const createKey = async () => {
+    if (displayOnly || !info?.enabled || busyRef.current) return
     const name = keyName.trim()
     if (!name) {
       toast({ title: t('settings.mcp_api_key_name_required'), tone: 'danger' })
@@ -239,7 +240,7 @@ export function McpSettings() {
       if (mountedRef.current) {
         setInfo((current) => current && ({
           ...current,
-          aiSearch: { ...current.aiSearch, pendingCount: current.aiSearch.pendingCount + result.enqueued },
+          aiSearch: result,
         }))
       }
       toast({ title: t('settings.mcp_ai_search_reindexed', { count: result.enqueued }), tone: 'success' })
@@ -415,7 +416,8 @@ export function McpSettings() {
         <div className="mb-2 flex items-center gap-2">
           <Input
             value={keyName}
-            disabled={displayOnly}
+            disabled={displayOnly || !info.enabled || Boolean(busy)}
+            aria-label={t('settings.mcp_api_key_name')}
             onChange={(e) => setKeyName(e.target.value)}
             maxLength={80}
             placeholder={t('settings.mcp_api_key_name_placeholder')}
@@ -623,17 +625,17 @@ function clientSnippets(info: McpSettingsInfo): Array<{ id: string; name: string
     {
       id: 'codex',
       name: 'Codex',
-      value: `codex mcp add inkstone --url "${endpoint}" --oauth-resource "${endpoint}"`,
+      value: `codex mcp add inkstone --url "${endpoint}"`,
     },
     {
       id: 'claude-code',
       name: 'Claude Code',
-      value: `claude mcp add-json inkstone '${claudeJson}' --scope user\n/mcp`,
+      value: `claude mcp add-json inkstone '${claudeJson}' --scope user\nclaude mcp login inkstone`,
     },
     {
       id: 'hermes',
       name: 'Hermes Agent',
-      value: `mcp_servers:\n  inkstone:\n    url: "${endpoint}"\n    auth: oauth\n    oauth:\n      scope: "${scopeText}"\n\nhermes mcp login inkstone`,
+      value: `hermes mcp add inkstone --url "${endpoint}" --auth oauth\nhermes mcp login inkstone`,
     },
     {
       id: 'openclaw',

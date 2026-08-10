@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Camera, KeyRound, LogOut, ShieldCheck, UserRound } from 'lucide-react'
 import { PROFILE_NAME_MAX_LENGTH } from '@shared/avatar'
+import { LIMITS } from '@shared/constants'
 import { Avatar, Badge, Button } from '../../components/primitives'
 import { Input, SettingRow, Switch } from '../../components/form'
 import { confirm } from '../../components/overlay'
@@ -9,6 +10,7 @@ import { t } from '../../lib/i18n'
 import { useSession } from '../../store/session'
 import { useUi } from '../../store/ui'
 import { AvatarPicker } from './AvatarPicker'
+import { TotpSettings } from './TotpSettings'
 
 export function AccountSettings() {
   const user = useSession((state) => state.user)
@@ -22,7 +24,10 @@ export function AccountSettings() {
         <h3 className="mb-2 px-1 text-[12px] font-semibold text-[var(--text-secondary)]">
           {t("settings.sign_in_security")}
         </h3>
-        <PasswordSection />
+        <div className="space-y-2">
+          <PasswordSection />
+          <TotpSettings />
+        </div>
       </section>
 
       {user.role === 'owner' && (
@@ -279,6 +284,7 @@ function PasswordSection() {
             <Input
               type="password"
               value={currentPassword}
+              maxLength={LIMITS.passwordMaxLength}
               onChange={(event) => setCurrentPassword(event.target.value)}
               disabled={busy}
               autoComplete="current-password"
@@ -292,6 +298,7 @@ function PasswordSection() {
               <Input
                 type="password"
                 value={newPassword}
+                maxLength={LIMITS.passwordMaxLength}
                 onChange={(event) => setNewPassword(event.target.value)}
                 disabled={busy}
                 autoComplete="new-password"
@@ -304,6 +311,7 @@ function PasswordSection() {
               <Input
                 type="password"
                 value={confirmation}
+                maxLength={LIMITS.passwordMaxLength}
                 onChange={(event) => setConfirmation(event.target.value)}
                 disabled={busy}
                 autoComplete="new-password"
@@ -410,6 +418,7 @@ function RegistrationSection() {
             <Input
               type="password"
               value={password}
+              maxLength={LIMITS.passwordMaxLength}
               onChange={(event) => setPassword(event.target.value)}
               disabled={busy}
               autoComplete="current-password"

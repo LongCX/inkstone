@@ -223,7 +223,7 @@ function TargetCard({ target, onEdit, onChanged, onPatch, onRemove, onRestore, }
             setUpdating(true);
             onPatch(target.id, { enabled });
             try {
-                await api.backup.patch(target.id, { enabled } as Partial<BackupTargetInput>);
+                await api.backup.patch(target.id, { enabled, expectedUpdatedAt: target.updatedAt });
                 await onChanged();
             }
             catch (error) {
@@ -371,7 +371,7 @@ function TargetForm({ target, onClose, onSaved, }: {
         setSaving(true);
         try {
             if (target)
-                await api.backup.patch(target.id, buildPayload());
+                await api.backup.patch(target.id, { ...buildPayload(), expectedUpdatedAt: target.updatedAt });
             else
                 await api.backup.create(buildPayload());
             toast({ title: target ? t("settings.backup_target_updated") : t("settings.backup_target_added"), tone: 'success' });

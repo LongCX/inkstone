@@ -1,6 +1,7 @@
 import { LIMITS } from '@shared/constants'
 import { segmentCJK } from '@shared/markdown-utils'
 import { truncateText } from '@shared/text-utils'
+import { selectQueueUsersRoundRobin } from './metadata'
 
 interface IndexableNote {
   id: string
@@ -10,6 +11,8 @@ interface IndexableNote {
   content_hash: string
   updated_at: number
 }
+
+const FTS_DRAIN_CURSOR_META_KEY = 'fts-index-drain-user-v1'
 
 
 export async function rebuildFtsIndex(db: D1Database, userId: string): Promise<number> {
@@ -206,12 +209,14 @@ export async function hasPendingFtsWork(db: D1Database, userId: string): Promise
 }
 
 export async function drainAllFtsQueues(db: D1Database, maxUsers = 20): Promise<number> {
-  const { results } = await db
-    .prepare(`SELECT DISTINCT user_id FROM fts_index_queue LIMIT ?1`)
-    .bind(maxUsers)
-    .all<{ user_id: string }>()
+  const users = await selectQueueUsersRoundRobin(
+    db,
+    'fts_index_queue',
+    FTS_DRAIN_CURSOR_META_KEY,
+    maxUsers,
+  )
   let processed = 0
-  for (const { user_id } of results) {
+  for (const user_id of users) {
     processed += await drainFtsQueue(db, user_id, FTS_DRAIN_ALL_BATCH)
   }
   return processed

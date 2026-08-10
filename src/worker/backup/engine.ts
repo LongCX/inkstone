@@ -146,7 +146,7 @@ async function runBackupUnlocked(
       bytes: 0,
       results,
     }
-    await recordOutcomeSafely(env, userId, failed)
+    await recordOutcomeSafely(env, userId, failed, targets)
     return failed
   }
 
@@ -168,7 +168,7 @@ async function runBackupUnlocked(
     results,
   }
 
-  await recordOutcomeSafely(env, userId, run)
+  await recordOutcomeSafely(env, userId, run, targets)
   return run
 }
 
@@ -285,10 +285,11 @@ async function recordOutcomeSafely(
   env: Env,
   userId: string,
   run: BackupRun,
+  targets: readonly TargetRow[],
 ): Promise<void> {
   await persistRunSafely(env, userId, run)
   try {
-    await updateTargetStates(env, userId, run.results)
+    await updateTargetStates(env, userId, run.results, targets)
   } catch (error) {
     console.error(`[inkstone] Backup completed, but writing target state failed (${run.id}):`, error)
   }
@@ -298,16 +299,21 @@ async function updateTargetStates(
   env: Env,
   userId: string,
   results: BackupTargetResult[],
+  targets: readonly TargetRow[],
 ): Promise<void> {
   const now = Date.now()
   if (!results.length) return
+  const targetVersions = new Map(targets.map((target) => [target.id, target.updated_at]))
   await env.DB.batch(
-    results.map((result) =>
-      env.DB.prepare(
-        `UPDATE backup_targets SET last_run_at = ?1, last_status = ?2, last_error = ?3, updated_at = ?1
-           WHERE id = ?4 AND user_id = ?5`,
-      ).bind(now, result.ok ? 'success' : 'failed', result.error, result.targetId, userId),
-    ),
+    results.flatMap((result) => {
+      const targetVersion = targetVersions.get(result.targetId)
+      return targetVersion === undefined ? [] : [
+        env.DB.prepare(
+          `UPDATE backup_targets SET last_run_at = ?1, last_status = ?2, last_error = ?3, updated_at = ?1
+             WHERE id = ?4 AND user_id = ?5 AND updated_at = ?6`,
+        ).bind(now, result.ok ? 'success' : 'failed', result.error, result.targetId, userId, targetVersion),
+      ]
+    }),
   )
 }
 

@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { LIMITS } from '@shared/constants'
 import { truncateText } from '@shared/text-utils'
-import type { BackupRun, BackupTargetInput, BackupTargetResult } from '@shared/types'
+import type { BackupRun, BackupTargetInput, BackupTargetPatchInput, BackupTargetResult } from '@shared/types'
 import type { AppBindings } from '../env'
 import { runBackup, testTarget, toBackupTarget, type TargetRow } from '../backup/engine'
 import {
@@ -70,8 +70,14 @@ backupRoutes.patch('/targets/:id', async (c) => {
   const userId = c.get('userId')
   const id = c.req.param('id')
   const existing = await loadTarget(c.env.DB, userId, id)
-  const body = await readJson<Partial<BackupTargetInput>>(c, JSON_BODY_LIMITS.backup)
+  const body = await readJson<BackupTargetPatchInput>(c, JSON_BODY_LIMITS.backup)
   validateInputShape(body)
+  if (
+    body.expectedUpdatedAt !== undefined &&
+    (!Number.isSafeInteger(body.expectedUpdatedAt) || body.expectedUpdatedAt < 0)
+  ) {
+    throw ApiError.badRequest('expectedUpdatedAt must be a non-negative integer')
+  }
 
   const merged = mergeTargetInput(existing, body)
   validateInput(merged, false)
@@ -88,9 +94,10 @@ backupRoutes.patch('/targets/:id', async (c) => {
     secret = await encryptSecret(c.env, id, nextSecret)
   }
 
-  await c.env.DB.prepare(
+  const updatedAt = Math.max(Date.now(), existing.updated_at + 1)
+  const updated = await c.env.DB.prepare(
     `UPDATE backup_targets SET type = ?1, name = ?2, enabled = ?3, config = ?4, secret = ?5, updated_at = ?6
-       WHERE id = ?7 AND user_id = ?8`,
+       WHERE id = ?7 AND user_id = ?8 AND updated_at = ?9`,
   )
     .bind(
       merged.type,
@@ -98,11 +105,15 @@ backupRoutes.patch('/targets/:id', async (c) => {
       merged.enabled === false ? 0 : 1,
       JSON.stringify(normalizeConfig(merged)),
       secret,
-      Date.now(),
+      updatedAt,
       id,
       userId,
+      body.expectedUpdatedAt ?? existing.updated_at,
     )
     .run()
+  if (!updated.meta.changes) {
+    throw ApiError.conflict('The backup target changed elsewhere. Refresh and try again')
+  }
 
   return c.json(toBackupTarget(await loadTarget(c.env.DB, userId, id)))
 })

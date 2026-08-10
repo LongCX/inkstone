@@ -1,9 +1,10 @@
 import { scrypt as nodeScrypt } from 'node:crypto'
+import { LIMITS } from '@shared/constants'
 import { fromBase64Url, timingSafeEqual, toBase64Url } from './encoding'
 
 
 const PASSWORD_MIN_LENGTH = 8
-export const PASSWORD_MAX_LENGTH = 128
+export const PASSWORD_MAX_LENGTH = LIMITS.passwordMaxLength
 export const USERNAME_PATTERN = /^[a-z0-9_-]{3,32}$/
 export const SCRYPT_N = 2 ** 14
 export const SCRYPT_R = 8

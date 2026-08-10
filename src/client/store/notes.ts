@@ -268,11 +268,14 @@ export const useNotes = create<NotesState>((set, get) => ({
 
                         let catchup = snapshot.cursor > 0 ? await api.sync(snapshot.cursor) : null;
                         const increments: SyncResponse[] = [];
-                        let catchupBatches = 0;
+                        const catchupCursors = new Set<number>();
                         while (catchup && !catchup.full) {
                             increments.push(catchup);
-                            if (!catchup.hasMore || ++catchupBatches >= 20)
+                            if (!catchup.hasMore)
                                 break;
+                            if (catchupCursors.has(catchup.cursor))
+                                throw new Error(t("notes.sync_pagination_data_is_incomplete"));
+                            catchupCursors.add(catchup.cursor);
                             catchup = await api.sync(catchup.cursor);
                         }
                         if (catchup?.full) {
@@ -289,9 +292,17 @@ export const useNotes = create<NotesState>((set, get) => ({
                     }
                     get().applySync(payload);
 
-                    let guard = 0;
-                    while (payload.hasMore && guard++ < 20) {
-                        payload = await api.sync(get().cursor);
+                    const incrementalCursors = new Set<number>();
+                    while (payload.hasMore) {
+                        if (incrementalCursors.has(payload.cursor))
+                            throw new Error(t("notes.sync_pagination_data_is_incomplete"));
+                        incrementalCursors.add(payload.cursor);
+                        const next = await api.sync(payload.cursor);
+                        if (next.full) {
+                            forcePullQueued = true;
+                            break;
+                        }
+                        payload = next;
                         get().applySync(payload);
                     }
                     set({ online: true });
@@ -316,7 +327,7 @@ export const useNotes = create<NotesState>((set, get) => ({
     applySync(payload) {
         if (payload.settingsChanged)
             void useSession.getState().refreshSettings().catch(() => { });
-        if (payload.profileChanged)
+        if (payload.profileChanged || payload.siteChanged)
             void useSession.getState().refresh().catch(() => { });
         const deletionIds = payload.deletions
             .filter((item) => item.entity === 'note')
@@ -1078,7 +1089,8 @@ export const useNotes = create<NotesState>((set, get) => ({
             if (changed)
                 scheduleShellSave(get);
         }
-        catch {
+        catch (error) {
+            throw error;
         }
     },
     replayPending() {
@@ -1106,12 +1118,13 @@ export function setOptimisticTagCache(update: (state: NotesState) => Partial<Tag
 async function collectFullSync(first: SyncResponse): Promise<SyncResponse> {
     const notes = new Map(first.notes.map((note) => [note.id, note]));
     let page = first;
-    let pages = 1;
+    const requestedKeys = new Set<string>();
     while (page.hasMore) {
         if (page.nextKey === null)
             throw new Error(t("notes.full_sync_pagination_data_is_incomplete"));
-        if (pages++ >= 100)
-            throw new Error(t("notes.the_note_count_exceeds_the_per_sync_limit"));
+        if (requestedKeys.has(page.nextKey))
+            throw new Error(t("notes.full_sync_pagination_data_is_incomplete"));
+        requestedKeys.add(page.nextKey);
         page = await api.sync(0, {
             after: page.nextKey,
             snapshot: first.cursor,
@@ -1138,9 +1151,11 @@ function consolidateFullSync(snapshot: SyncResponse, increments: SyncResponse[])
     let serverTime = snapshot.serverTime;
     let settingsChanged = snapshot.settingsChanged;
     let profileChanged = snapshot.profileChanged;
+    let siteChanged = snapshot.siteChanged;
     for (const update of increments) {
         settingsChanged ||= update.settingsChanged;
         profileChanged ||= update.profileChanged;
+        siteChanged ||= update.siteChanged;
         for (const note of update.notes)
             notes.set(note.id, note);
         if (update.facetsFull) {
@@ -1172,6 +1187,7 @@ function consolidateFullSync(snapshot: SyncResponse, increments: SyncResponse[])
         facetsFull: true,
         settingsChanged,
         profileChanged,
+        siteChanged,
         notes: [...notes.values()],
         folders: [...folders.values()],
         tags: [...tags.values()],

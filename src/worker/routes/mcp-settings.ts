@@ -8,6 +8,8 @@ import {
   drainAiIndexQueue,
   enqueueAllNotesForIndex,
   getAiSearchStatus,
+  isAiSearchAvailable,
+  isAiSearchEnabled,
   setAiSearchEnabled,
 } from '../mcp/ai-search'
 import {
@@ -85,6 +87,7 @@ mcpSettingsRoutes.put('/', async (c) => {
 
 mcpSettingsRoutes.post('/keys', async (c) => {
   const user = c.get('user')
+  if (!await isMcpEnabled(c.env.DB)) throw ApiError.conflict('MCP is disabled')
   const body = await readJson<{ name?: unknown }>(c, JSON_BODY_LIMITS.small)
   const name = typeof body.name === 'string' ? body.name.trim() : ''
   if (!name || name.length > 80) throw ApiError.badRequest('name must be 1-80 characters')
@@ -106,6 +109,10 @@ mcpSettingsRoutes.put('/ai-search', async (c) => {
   const userId = c.get('userId')
   const body = await readJson<{ enabled?: unknown }>(c, JSON_BODY_LIMITS.small)
   if (typeof body.enabled !== 'boolean') throw ApiError.badRequest('enabled must be a boolean')
+  if (body.enabled && !await isMcpEnabled(c.env.DB)) throw ApiError.conflict('MCP is disabled')
+  if (body.enabled && !isAiSearchAvailable(c.env)) {
+    throw ApiError.conflict('Workers AI is not configured')
+  }
   await setAiSearchEnabled(c.env.DB, userId, body.enabled)
   if (body.enabled) {
     const enqueued = await enqueueAllNotesForIndex(c.env.DB, userId)
@@ -118,9 +125,13 @@ mcpSettingsRoutes.put('/ai-search', async (c) => {
 
 mcpSettingsRoutes.post('/ai-search/reindex', async (c) => {
   const userId = c.get('userId')
+  if (!await isMcpEnabled(c.env.DB)) throw ApiError.conflict('MCP is disabled')
+  if (!isAiSearchAvailable(c.env)) throw ApiError.conflict('Workers AI is not configured')
+  if (!await isAiSearchEnabled(c.env.DB, userId)) throw ApiError.conflict('AI search is disabled')
   const enqueued = await enqueueAllNotesForIndex(c.env.DB, userId)
+  const status = await getAiSearchStatus(c.env.DB, c.env, userId)
   c.executionCtx.waitUntil(drainAiIndexQueue(c.env, 30).catch(() => {}))
-  return c.json({ ok: true, enqueued })
+  return c.json({ ok: true, enqueued, ...status })
 })
 
 mcpSettingsRoutes.post('/ai-search/clear', async (c) => {
@@ -137,7 +148,12 @@ mcpSettingsRoutes.delete('/grants/:id', async (c) => {
 mcpSettingsRoutes.post('/grants/revoke-all', async (c) => {
   if (!c.env.OAUTH_PROVIDER) throw new ApiError(503, 'internal', 'OAuth is unavailable')
   const grants = await collectGrantIds(c.env.OAUTH_PROVIDER, c.get('userId'))
-  await Promise.all(grants.map((id) => c.env.OAUTH_PROVIDER!.revokeGrant(id, c.get('userId'))))
+  for (let offset = 0; offset < grants.length; offset += 25) {
+    await Promise.all(
+      grants.slice(offset, offset + 25)
+        .map((id) => c.env.OAUTH_PROVIDER!.revokeGrant(id, c.get('userId'))),
+    )
+  }
   return c.json({ ok: true, revoked: grants.length })
 })
 
@@ -169,11 +185,16 @@ async function collectGrantIds(
 ): Promise<string[]> {
   const ids: string[] = []
   let cursor: string | undefined
+  const seenCursors = new Set<string>()
   do {
     const page = await oauth.listUserGrants(userId, { limit: 100, cursor })
     ids.push(...page.items.map((grant) => grant.id))
     cursor = page.cursor
-  } while (cursor && ids.length < 500)
+    if (cursor && seenCursors.has(cursor)) {
+      throw new Error('OAuth grant pagination returned a repeated cursor')
+    }
+    if (cursor) seenCursors.add(cursor)
+  } while (cursor)
   return ids
 }
 

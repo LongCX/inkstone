@@ -53,6 +53,7 @@ export function CodeEditor({ value, onChange, settings, sources, handlers, onRea
             indentUnit.of(' '.repeat(settings.tabSize)),
             EditorState.allowMultipleSelections.of(true),
             EditorView.lineWrapping,
+            EditorView.contentAttributes.of({ 'aria-label': placeholder }),
             placeholderExt(placeholder),
             search({ top: true }),
             autocompletion({

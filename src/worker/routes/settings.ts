@@ -21,6 +21,7 @@ settingsRoutes.put('/registration', async (c) => {
   if (typeof body.enabled !== 'boolean') throw ApiError.badRequest('Missing enabled parameter')
   await requireCurrentPassword(c.env.DB, user.id, body.password)
   await setAllowRegistration(c.env.DB, body.enabled)
+  await commitChange(c, 'site', user.id, 'upsert')
   return c.json({ ok: true, registrationOpen: body.enabled })
 })
 

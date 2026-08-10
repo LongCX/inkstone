@@ -17,16 +17,14 @@ export async function createShareAssetSession(
   const token = createOpaqueToken()
   const now = Date.now()
   if (expiresAt <= now) throw new Error('expired_share_asset_session')
-  await db.batch([
-    db
-      .prepare(
-        `INSERT INTO share_asset_sessions
-           (id, slug, password_hash, expires_at, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)`,
-      )
-      .bind(await tokenId(token), slug, passwordHash, expiresAt, now),
-    db.prepare(`DELETE FROM share_asset_sessions WHERE expires_at <= ?1`).bind(now),
-  ])
+  await db
+    .prepare(
+      `INSERT INTO share_asset_sessions
+         (id, slug, password_hash, expires_at, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)`,
+    )
+    .bind(await tokenId(token), slug, passwordHash, expiresAt, now)
+    .run()
   return token
 }
 

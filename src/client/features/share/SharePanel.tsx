@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, Eye, Globe, Link2, Lock, Trash2 } from 'lucide-react';
+import { LIMITS } from '@shared/constants';
 import type { ShareInfo } from '@shared/types';
 import { api, ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
@@ -53,6 +54,7 @@ export function SharePanel({ onClose }: {
             return;
         }
         const noteId = note.id;
+        const controller = new AbortController();
         let cancelled = false;
         setShare(undefined);
         setLoadError(null);
@@ -62,7 +64,7 @@ export function SharePanel({ onClose }: {
         setCopied(false);
         window.clearTimeout(copiedTimer.current);
         api.share
-            .get(note.id)
+            .get(note.id, controller.signal)
             .then((res) => {
             if (cancelled || loadEpoch.current !== epoch || noteIdRef.current !== noteId)
                 return;
@@ -76,6 +78,7 @@ export function SharePanel({ onClose }: {
         });
         return () => {
             cancelled = true;
+            controller.abort();
         };
     }, [note?.id, reload]);
     useEffect(() => () => {
@@ -243,7 +246,7 @@ export function SharePanel({ onClose }: {
           </div>
 
           {usePassword && (<Field label={t("share.passcode")} hint={share?.hasPassword ? t("share.leave_blank_to_keep_the_current_passcode") : undefined}>
-              <Input type="password" value={password} disabled={busy !== null} maxLength={128} onChange={(e) => setPassword(e.target.value)} placeholder={share?.hasPassword ? t("share.unchanged") : t("share.set_a_passcode")} autoComplete="new-password"/>
+              <Input type="password" value={password} disabled={busy !== null} maxLength={LIMITS.passwordMaxLength} onChange={(e) => setPassword(e.target.value)} placeholder={share?.hasPassword ? t("share.unchanged") : t("share.set_a_passcode")} autoComplete="new-password"/>
             </Field>)}
 
           <Field label={t("share.expiration")}>

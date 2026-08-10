@@ -84,9 +84,19 @@ export async function runIdempotent<T>(options: {
   return result
 }
 
-export async function purgeExpiredMcpOperations(db: D1Database, maxAgeMs = 7 * 24 * 60 * 60 * 1000): Promise<void> {
-  await db.prepare(`DELETE FROM mcp_operations WHERE created_at < ?1`)
-    .bind(Date.now() - maxAgeMs)
+export async function purgeExpiredMcpOperations(
+  db: D1Database,
+  maxAgeMs = 7 * 24 * 60 * 60 * 1000,
+  limit = 500,
+): Promise<void> {
+  const capped = Math.max(1, Math.min(1_000, Math.trunc(limit)))
+  await db.prepare(
+    `DELETE FROM mcp_operations WHERE rowid IN (
+       SELECT rowid FROM mcp_operations
+        WHERE created_at < ?1 ORDER BY created_at, rowid LIMIT ?2
+     )`,
+  )
+    .bind(Date.now() - maxAgeMs, capped)
     .run()
 }
 

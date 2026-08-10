@@ -285,11 +285,11 @@ function serializedPersistedState(state: UiState): string {
 function persist(state: UiState): void {
   const serialized = serializedPersistedState(state)
   if (serialized === lastPersisted) return
-  lastPersisted = serialized
   window.clearTimeout(persistTimer)
   persistTimer = window.setTimeout(() => {
     try {
       localStorage.setItem(STORAGE_KEY, serialized)
+      lastPersisted = serialized
     } catch {
 
     }

@@ -70,28 +70,18 @@ interface AttachmentSnapshotRow {
 
 const encoder = new TextEncoder()
 const NOTE_PAGE_SIZE = 100
+const ATTACHMENT_LOOKUP_BATCH = 200
 const ATTACHMENT_REFERENCE_RE =
   /\/api\/files\/([0-9a-hjkmnp-tv-z]{26})(?=$|[\s>)\]"'?#])/g
 
 export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot> {
-  const [folderResult, attachmentResult] = await env.DB.batch([
-    env.DB.prepare(
-      `SELECT f.id, f.parent_id, f.name, f.icon, f.color, f.position, f.created_at, f.updated_at
-         FROM folders f WHERE f.user_id = ?1 ORDER BY f.position ASC, f.id ASC`,
-    ).bind(userId),
-    env.DB.prepare(
-      `SELECT id, user_id, filename, mime, size, sha256, storage, created_at
-         FROM attachments WHERE user_id = ?1 ORDER BY created_at ASC, id ASC`,
-    ).bind(userId),
-  ])
-  const folders = (folderResult as D1Result<FolderRow>).results.map(toFolder)
-  const attachmentRows = (attachmentResult as D1Result<AttachmentSnapshotRow>).results
+  const folderResult = await env.DB.prepare(
+    `SELECT f.id, f.parent_id, f.name, f.icon, f.color, f.position, f.created_at, f.updated_at
+       FROM folders f WHERE f.user_id = ?1 ORDER BY f.position ASC, f.id ASC`,
+  ).bind(userId).all<FolderRow>()
+  const folders = folderResult.results.map(toFolder)
   const folderPaths = buildFolderPaths(folders)
   const attachmentsById = new Map<string, AttachmentSnapshotRow>()
-
-  for (const row of attachmentRows) {
-    attachmentsById.set(row.id, row)
-  }
 
   const attachmentPathByHash = new Map<string, string>()
   const attachmentPathById = new Map<string, string>()
@@ -110,6 +100,14 @@ export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot>
         WHERE n.user_id = ?1 AND n.id > ?2 ORDER BY n.id ASC LIMIT ?3`,
     ).bind(userId, afterId, NOTE_PAGE_SIZE).all<NoteRow>()
     if (!page.results.length) break
+
+    const missingAttachmentIds = new Set<string>()
+    for (const row of page.results) {
+      for (const id of extractAttachmentIds(row.content)) {
+        if (!attachmentsById.has(id)) missingAttachmentIds.add(id)
+      }
+    }
+    await loadReferencedAttachments(env.DB, userId, missingAttachmentIds, attachmentsById)
 
     for (const row of page.results) {
       const note = toNote(row)
@@ -255,6 +253,24 @@ export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot>
   }
 }
 
+async function loadReferencedAttachments(
+  db: D1Database,
+  userId: string,
+  ids: ReadonlySet<string>,
+  target: Map<string, AttachmentSnapshotRow>,
+): Promise<void> {
+  const values = [...ids]
+  for (let offset = 0; offset < values.length; offset += ATTACHMENT_LOOKUP_BATCH) {
+    const chunk = values.slice(offset, offset + ATTACHMENT_LOOKUP_BATCH)
+    const { results } = await db.prepare(
+      `SELECT id, user_id, filename, mime, size, sha256, storage, created_at
+         FROM attachments
+        WHERE user_id = ?1 AND id IN (SELECT value FROM json_each(?2))`,
+    ).bind(userId, JSON.stringify(chunk)).all<AttachmentSnapshotRow>()
+    for (const row of results) target.set(row.id, row)
+  }
+}
+
 export async function materializeSnapshot(snapshot: Snapshot): Promise<MaterializedBackupFile[]> {
   const files = [...snapshot.payloadFiles, snapshot.manifestFile, snapshot.completeFile]
   assertArchiveSizesCanBeRestored(files)
@@ -291,8 +307,7 @@ async function readBackupFile(file: BackupFile): Promise<Uint8Array> {
 }
 
 export async function buildJsonExport(env: Env, userId: string): Promise<Uint8Array> {
-  const [noteRows, folderRows, tagRows, userRows] = await env.DB.batch([
-    env.DB.prepare(`SELECT ${NOTE_COLUMNS_FULL} FROM notes n WHERE n.user_id = ?1 ORDER BY n.created_at ASC`).bind(userId),
+  const [folderRows, tagRows, userRows] = await env.DB.batch([
     env.DB.prepare(
       `SELECT f.id, f.parent_id, f.name, f.icon, f.color, f.position, f.created_at, f.updated_at
          FROM folders f WHERE f.user_id = ?1 AND f.deleted_at IS NULL ORDER BY f.position ASC`,
@@ -301,17 +316,49 @@ export async function buildJsonExport(env: Env, userId: string): Promise<Uint8Ar
     env.DB.prepare(`SELECT login, name FROM users WHERE id = ?1`).bind(userId),
   ])
   const user = (userRows.results[0] as { login: string; name: string } | undefined) ?? null
-  const bundle: ExportBundle = {
+  const metadata: Omit<ExportBundle, 'notes' | 'attachments'> = {
     format: 'inkstone-export',
     version: 1,
     exportedAt: Date.now(),
     user: { login: user?.login ?? 'unknown', name: user?.name ?? '' },
     folders: (folderRows as D1Result<FolderRow>).results.map(toFolder),
     tags: (tagRows as D1Result<TagRow>).results.map(toTag),
-    notes: (noteRows as D1Result<NoteRow>).results.map(toNote),
-    attachments: [],
   }
-  const bytes = encoder.encode(JSON.stringify(bundle, null, 2))
+  const chunks: Uint8Array[] = []
+  let byteLength = 0
+  const append = (value: string) => {
+    const chunk = encoder.encode(value)
+    byteLength += chunk.byteLength
+    assertBundleByteLengthCanBeRestored(byteLength)
+    chunks.push(chunk)
+  }
+
+  append(`${JSON.stringify(metadata).slice(0, -1)},"notes":[`)
+  let afterId = ''
+  let firstNote = true
+  while (true) {
+    const page = await env.DB.prepare(
+      `SELECT ${NOTE_COLUMNS_FULL} FROM notes n
+        WHERE n.user_id = ?1 AND n.id > ?2 ORDER BY n.id ASC LIMIT ?3`,
+    ).bind(userId, afterId, NOTE_PAGE_SIZE).all<NoteRow>()
+    if (!page.results.length) break
+
+    for (const row of page.results) {
+      append(`${firstNote ? '' : ','}${JSON.stringify(toNote(row))}`)
+      firstNote = false
+    }
+
+    afterId = page.results.at(-1)!.id
+    if (page.results.length < NOTE_PAGE_SIZE) break
+  }
+  append('],"attachments":[]}')
+
+  const bytes = new Uint8Array(byteLength)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
   assertBundleCanBeRestored(bytes)
   return bytes
 }
@@ -344,7 +391,11 @@ function assertArchiveSizesCanBeRestored(
 }
 
 export function assertBundleCanBeRestored(bundle: Uint8Array): void {
-  if (bundle.byteLength > LIMITS.importBundleMaxBytes) {
+  assertBundleByteLengthCanBeRestored(bundle.byteLength)
+}
+
+function assertBundleByteLengthCanBeRestored(byteLength: number): void {
+  if (byteLength > LIMITS.importBundleMaxBytes) {
     throw ApiError.tooLarge(
       `The JSON export exceeds ${formatBytes(LIMITS.importBundleMaxBytes)} restore limit`,
     )

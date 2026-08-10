@@ -6,10 +6,12 @@ import {
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { getCookie, setCookie } from 'hono/cookie'
+import { LIMITS } from '@shared/constants'
 import type { AppLocale } from '@shared/types'
 import type { AppBindings } from '../env'
 import { ApiError } from '../lib/errors'
 import { timingSafeEqual } from '../lib/encoding'
+import { FORM_BODY_LIMITS, readUrlEncodedFormWithinLimit } from '../lib/request'
 import {
   getMcpPreferences,
   grantedMcpScopes,
@@ -70,15 +72,15 @@ mcpAuthorizeRoutes.post('/authorize', async (c) => {
   }
   const parsed = await parseAuthorization(c.req.raw, c.env.OAUTH_PROVIDER)
   if (parsed instanceof Response) return parsed
-  const body = await c.req.parseBody({ all: true })
-  const submittedCsrf = singleFormValue(body.csrf)
+  const body = await readUrlEncodedFormWithinLimit(c.req, FORM_BODY_LIMITS.authorization)
+  const submittedCsrf = body.get('csrf') ?? ''
   const storedCsrf = getCookie(c, CSRF_COOKIE) ?? ''
   if (!submittedCsrf || !storedCsrf || !timingSafeEqual(submittedCsrf, storedCsrf)) {
     throw ApiError.forbidden('Authorization form expired. Start the connection again.')
   }
   setCookie(c, CSRF_COOKIE, '', { path: '/authorize', maxAge: 0 })
 
-  if (singleFormValue(body.decision) !== 'approve') {
+  if (body.get('decision') !== 'approve') {
     return Response.redirect(
       oauthErrorRedirect(
         parsed,
@@ -91,7 +93,7 @@ mcpAuthorizeRoutes.post('/authorize', async (c) => {
   }
   const client = await c.env.OAUTH_PROVIDER!.lookupClient(parsed.clientId)
   if (!client) return html(c, errorPage(copy.unknownClient, locale, c.req.url), 400)
-  const selected = formValues(body.scope).filter((scope) =>
+  const selected = body.getAll('scope').filter((scope) =>
     (MCP_SUPPORTED_SCOPES as readonly string[]).includes(scope),
   )
   const preferences = await getMcpPreferences(c.env.DB, user.id)
@@ -145,7 +147,7 @@ async function parseAuthorization(
     redirect.searchParams.set('error', error.code)
     redirect.searchParams.set('error_description', error.description)
     if (error.state) redirect.searchParams.set('state', error.state)
-    redirect.searchParams.set('issuer', error.issuer ?? new URL(request.url).origin)
+    redirect.searchParams.set('iss', error.issuer ?? new URL(request.url).origin)
     return Response.redirect(redirect.toString(), 302)
   }
 }
@@ -156,11 +158,11 @@ function authorizationIssuer(request: Request, parsed: AuthRequest): string {
 
 function authorizationResponseRedirect(redirectTo: string, issuer: string): string {
   const redirect = new URL(redirectTo)
-  const returnedIssuer = redirect.searchParams.get('issuer')
+  const returnedIssuer = redirect.searchParams.get('iss')
   if (returnedIssuer && returnedIssuer !== issuer) {
     throw new Error('OAuth provider returned a mismatched authorization issuer')
   }
-  redirect.searchParams.set('issuer', issuer)
+  redirect.searchParams.set('iss', issuer)
   return redirect.toString()
 }
 
@@ -174,7 +176,7 @@ function oauthErrorRedirect(
   redirect.searchParams.set('error', code)
   redirect.searchParams.set('error_description', description)
   if (request.state) redirect.searchParams.set('state', request.state)
-  redirect.searchParams.set('issuer', issuer)
+  redirect.searchParams.set('iss', issuer)
   return redirect.toString()
 }
 
@@ -252,7 +254,7 @@ function loginPage(clientName: string, locale: AppLocale, currentUrl: string): s
         <section class="form-section" aria-labelledby="account-title">
           <h2 id="account-title">${copy.inkstoneAccount}</h2>
           <label class="field"><span>${copy.username}</span><input name="username" autocomplete="username" maxlength="32" required autofocus></label>
-          <label class="field"><span>${copy.password}</span><input name="password" type="password" autocomplete="current-password" maxlength="128" required></label>
+          <label class="field"><span>${copy.password}</span><input name="password" type="password" autocomplete="current-password" maxlength="${LIMITS.passwordMaxLength}" required></label>
         </section>
         <p id="error" class="error" role="alert"></p>
         <button class="primary wide" type="submit">${copy.signInContinue}</button>
@@ -418,7 +420,7 @@ function logoMark(): string {
 function page(content: string, locale: AppLocale, currentUrl: string): string {
   const copy = authorizationCopy(locale)
   const nextLocale = locale === 'zh-CN' ? 'en-US' : 'zh-CN'
-  return `<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inkstone authorization</title><style>
+  return `<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inkstone · ${escapeHtml(copy.authorization)}</title><style>
     :root{color-scheme:light;--bg-sunken:#f1efe9;--bg-base:#f7f5f1;--bg-overlay:#fff;--bg-inset:oklch(96.8% .005 90);--bg-hover:oklch(20% .01 265/4%);--border-subtle:oklch(20% .01 265/7%);--border-default:oklch(20% .01 265/11%);--border-strong:oklch(20% .01 265/17%);--text-primary:oklch(21% .01 265);--text-secondary:oklch(44% .01 265);--text-tertiary:oklch(58% .009 265);--text-quaternary:oklch(70% .007 265);--accent:oklch(54% .15 30);--accent-hover:oklch(48.5% .155 30);--accent-contrast:oklch(99% 0 0);--accent-soft:color-mix(in oklab,var(--accent) 14%,transparent);--accent-ring:color-mix(in oklab,var(--accent) 34%,transparent);--brand-accent:#bb4430;--danger:oklch(64% .19 22);--shadow-modal:0 0 0 1px oklch(20% .01 265/7%),0 8px 16px -4px oklch(20% .01 265/8%),0 24px 48px -12px oklch(20% .01 265/16%)}
     *{box-sizing:border-box}html{min-height:100%;background:var(--bg-sunken)}body{min-height:100vh;min-height:100dvh;margin:0;display:grid;place-items:center;padding:24px;background:var(--bg-sunken);color:var(--text-primary);font-family:'Inter Variable',-apple-system,BlinkMacSystemFont,'Segoe UI Variable Text','Segoe UI',Inter,Roboto,'PingFang SC','Microsoft YaHei UI',sans-serif;-webkit-font-smoothing:antialiased}.panel{width:min(100%,560px);overflow:hidden;border:1px solid var(--border-default);border-radius:20px;background:var(--bg-overlay);box-shadow:var(--shadow-modal)}.panel-header{display:flex;height:48px;align-items:center;border-bottom:1px solid var(--border-subtle);padding:0 20px;font-size:14px;font-weight:600;letter-spacing:-.012em}.header-subtitle{margin-left:8px;border-left:1px solid var(--border-default);padding-left:8px;color:var(--text-tertiary);font-size:11.5px;font-weight:400;letter-spacing:0}.panel-body{padding:18px 20px 20px}.request-card{display:flex;align-items:flex-start;gap:12px;border:1px solid var(--border-subtle);border-radius:12px;background:var(--bg-base);padding:14px}.brand-mark{display:grid;width:34px;height:34px;flex:none;place-items:center}.logo{display:block;width:32px;height:32px}.logo rect{fill:var(--text-primary)}.logo path{fill:var(--brand-accent)}.request-copy{min-width:0;flex:1}.title-line{display:flex;min-width:0;flex-wrap:wrap;align-items:center;gap:7px}.request-copy h1{margin:0;color:var(--text-primary);font-size:15px;font-weight:600;line-height:1.35;letter-spacing:-.012em;overflow-wrap:anywhere}.request-copy p{margin:4px 0 0;color:var(--text-tertiary);font-size:11.5px;line-height:1.55}.account{color:var(--text-secondary);font-weight:600}.badge{border-radius:999px;background:var(--accent-soft);padding:2px 6px;color:var(--accent);font-size:10px;font-weight:600;line-height:1.4}.form-section{margin-top:20px}.form-section h2{margin:0 0 4px;padding:0 1px;color:var(--text-quaternary);font-size:10.5px;font-weight:600;line-height:1.4;letter-spacing:.055em;text-transform:uppercase}.settings-list{width:100%}.setting-row{display:flex;min-height:58px;align-items:center;justify-content:space-between;gap:24px;border-bottom:1px solid var(--border-subtle);padding:10px 1px}.setting-row:not(.fixed){cursor:pointer}.setting-copy{min-width:0;flex:1}.setting-copy strong{display:block;color:var(--text-primary);font-size:13px;font-weight:500;line-height:1.4}.setting-copy small{display:block;margin-top:2px;color:var(--text-tertiary);font-size:11.5px;line-height:1.48}.switch{position:relative;width:34px;height:20px;flex:none;appearance:none;border:0;border-radius:999px;background:var(--border-strong);cursor:pointer;transition:background-color 180ms ease}.switch:after{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.16);content:'';transition:transform 180ms ease}.switch:checked{background:var(--accent)}.switch:checked:after{transform:translateX(14px)}.switch:disabled{cursor:not-allowed;opacity:.46}.switch:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.privacy-row{display:flex;align-items:flex-start;gap:10px;border:1px solid var(--border-subtle);border-radius:12px;background:var(--bg-base);padding:12px}.privacy-icon{display:grid;width:26px;height:26px;flex:none;place-items:center;border-radius:8px;background:var(--accent-soft);color:var(--accent)}.privacy-icon svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.privacy-row p{margin:0;color:var(--text-tertiary);font-size:11.5px;line-height:1.55}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}button,.link{display:inline-flex;min-height:32px;align-items:center;justify-content:center;border-radius:8px;padding:0 12px;font-family:inherit;font-size:12.5px;font-weight:500;text-decoration:none;cursor:pointer;transition:background-color 130ms ease,border-color 130ms ease,filter 130ms ease}.primary{border:1px solid transparent;background:var(--accent);color:var(--accent-contrast);box-shadow:0 1px 2px rgba(0,0,0,.14)}.primary:hover{background:var(--accent-hover)}.secondary{border:1px solid var(--border-default);background:transparent;color:var(--text-secondary)}.secondary:hover{border-color:var(--border-strong);background:var(--bg-hover);color:var(--text-primary)}button:focus-visible,.link:focus-visible,.field input:focus-visible{outline:2px solid var(--accent-ring);outline-offset:2px}button:disabled{cursor:wait;opacity:.5}.login-form .form-section{margin-top:18px}.field{display:grid;gap:5px;margin-top:11px;color:var(--text-secondary);font-size:11.5px;font-weight:500}.field input{width:100%;height:36px;border:1px solid var(--border-default);border-radius:8px;background:var(--bg-inset);padding:0 10px;color:var(--text-primary);font-family:inherit;font-size:13px;font-weight:400;outline:none;transition:border-color 130ms ease,box-shadow 130ms ease}.field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-ring)}.error{margin:9px 0 0;color:var(--danger);font-size:11.5px;line-height:1.45}.error:empty{display:none}.wide{width:100%;margin-top:14px}.foot{margin:12px 0 0;text-align:center;color:var(--text-quaternary);font-size:10.5px;line-height:1.5}
     @media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg-sunken:#131110;--bg-base:#181614;--bg-overlay:oklch(27% .012 265);--bg-inset:oklch(14% .008 265);--bg-hover:oklch(100% 0 0/4.5%);--border-subtle:oklch(100% 0 0/6%);--border-default:oklch(100% 0 0/10%);--border-strong:oklch(100% 0 0/17%);--text-primary:oklch(93% .004 265);--text-secondary:oklch(72% .008 265);--text-tertiary:oklch(56% .009 265);--text-quaternary:oklch(43% .008 265);--accent:oklch(66.5% .15 32);--accent-hover:oklch(71% .145 32);--brand-accent:#e0664a;--danger:oklch(68% .185 22);--shadow-modal:0 0 0 1px oklch(100% 0 0/8%),0 16px 40px -8px oklch(0% 0 0/65%),0 40px 80px -20px oklch(0% 0 0/55%)}}
@@ -439,16 +441,6 @@ function assertSameOrigin(request: Request): void {
 function randomToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(24))
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-function singleFormValue(value: string | File | (string | File)[] | undefined): string {
-  const first = Array.isArray(value) ? value[0] : value
-  return typeof first === 'string' ? first : ''
-}
-
-function formValues(value: string | File | (string | File)[] | undefined): string[] {
-  const values = Array.isArray(value) ? value : value === undefined ? [] : [value]
-  return values.filter((item): item is string => typeof item === 'string')
 }
 
 function escapeHtml(value: string): string {

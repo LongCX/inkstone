@@ -1,5 +1,6 @@
-import { mergeSettings } from '@shared/constants'
+import { LIMITS, mergeSettings } from '@shared/constants'
 import { countText, deriveExcerpt, deriveTitle, extractTags, sortTagNames } from '@shared/markdown-utils'
+import { truncateText } from '@shared/text-utils'
 import { welcomeNoteTemplates } from '@shared/welcome-notes'
 import type {
   Attachment,
@@ -111,7 +112,7 @@ export function refreshNote(note: Note, content: string, title?: string): Note {
   return {
     ...note,
     content,
-    title: title === undefined ? note.title : title.trim(),
+    title: title === undefined ? note.title : truncateText(title.trim(), LIMITS.titleMaxLength),
     excerpt: deriveExcerpt(content),
     tags: sortTagNames(extractTags(content)),
     wordCount: counted.words,

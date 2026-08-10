@@ -5,10 +5,11 @@ const MASTER_KEY_NAME = 'backup-master-key-v1'
 const MASTER_KEY_BYTES = 32
 const MAX_REQUEST_BYTES = 24 * 1024
 const MAX_CIPHERTEXT_LENGTH = 24 * 1024
-const BACKUP_SCOPE_PATTERN = /^backup:[0-9a-hjkmnp-tv-z]{26}$/
+const CREDENTIAL_SCOPE_PATTERN = /^(?:backup|totp):[0-9a-hjkmnp-tv-z]{26}$/
 const CIPHERTEXT_PATTERN = /^v1\.([A-Za-z0-9_-]+)$/
 const HKDF_SALT = utf8('inkstone.backup-credentials.v1')
-const ALLOWED_SECRET_FIELDS = new Set(['password', 'accessKeyId', 'secretAccessKey'])
+const BACKUP_SECRET_FIELDS = new Set(['password', 'accessKeyId', 'secretAccessKey'])
+const TOTP_SECRET_FIELDS = new Set(['secret'])
 
 type CredentialRecord = Record<string, string>
 
@@ -24,7 +25,7 @@ export class CredentialVault implements DurableObject {
     if (!body) return jsonError(400, 'invalid_request')
 
     if (new URL(request.url).pathname === '/encrypt') {
-      if (!isScope(body.scope) || !isCredentialRecord(body.value)) {
+      if (!isScope(body.scope) || !isCredentialRecord(body.scope, body.value)) {
         return jsonError(400, 'invalid_request')
       }
       const plaintext = utf8(JSON.stringify(body.value))
@@ -83,7 +84,7 @@ export class CredentialVault implements DurableObject {
         packed.subarray(12) as BufferSource,
       )
       const value: unknown = JSON.parse(fromUtf8(decrypted))
-      return isCredentialRecord(value) ? value : null
+      return isCredentialRecord(scope, value) ? value : null
     } catch {
       return null
     }
@@ -147,16 +148,17 @@ async function readBody(request: Request): Promise<Record<string, unknown> | nul
 }
 
 function isScope(value: unknown): value is string {
-  return typeof value === 'string' && BACKUP_SCOPE_PATTERN.test(value)
+  return typeof value === 'string' && CREDENTIAL_SCOPE_PATTERN.test(value)
 }
 
-function isCredentialRecord(value: unknown): value is CredentialRecord {
+function isCredentialRecord(scope: string, value: unknown): value is CredentialRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const allowed = scope.startsWith('totp:') ? TOTP_SECRET_FIELDS : BACKUP_SECRET_FIELDS
   const entries = Object.entries(value)
-  if (entries.length < 1 || entries.length > ALLOWED_SECRET_FIELDS.size) return false
+  if (entries.length < 1 || entries.length > allowed.size) return false
   return entries.every(
     ([key, field]) =>
-      ALLOWED_SECRET_FIELDS.has(key) &&
+      allowed.has(key) &&
       typeof field === 'string' &&
       field.length > 0 &&
       field.length <= 4096,

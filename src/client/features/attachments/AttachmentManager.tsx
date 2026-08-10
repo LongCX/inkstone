@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FileText, Sparkles, Trash2 } from 'lucide-react';
 import type { AttachmentWithUsage } from '@shared/types';
 import { cn } from '../../lib/cn';
@@ -7,7 +7,7 @@ import { formatBytes } from '../../lib/time';
 import { Button, IconButton } from '../../components/primitives';
 import { LoadingBlock } from '../../components/feedback';
 import { Segmented } from '../../components/form';
-import { Drawer, confirm } from '../../components/overlay';
+import { Drawer, Tooltip, confirm } from '../../components/overlay';
 import { useUi } from '../../store/ui';
 import { t } from "../../lib/i18n";
 
@@ -19,24 +19,61 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
     onChanged?: () => void;
 }) {
     const [files, setFiles] = useState<AttachmentWithUsage[] | null>(null);
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [filter, setFilter] = useState<FilterKind>('all');
     const [busy, setBusy] = useState(false);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const loadEpoch = useRef(0);
     const toast = useUi((s) => s.toast);
-    const load = useCallback(async () => {
+    const loadPage = useCallback(async (cursor: string | undefined, epoch: number, signal?: AbortSignal) => {
         try {
-            const { files: next } = await api.files.list();
-            setFiles(next);
+            const result = await api.files.list(cursor, signal);
+            if (epoch !== loadEpoch.current)
+                return false;
+            setFiles((previous) => {
+                if (!cursor)
+                    return result.files;
+                const seen = new Set((previous ?? []).map((file) => file.id));
+                return [...(previous ?? []), ...result.files.filter((file) => !seen.has(file.id))];
+            });
+            setNextCursor(result.nextCursor ?? null);
             setError(null);
+            return true;
         }
         catch (err) {
-            setError(err instanceof Error ? err.message : String(err));
+            if (epoch !== loadEpoch.current || signal?.aborted)
+                return false;
+            const message = err instanceof Error ? err.message : String(err);
+            if (cursor) {
+                toast({ title: t("attachments.load_failed"), description: message, tone: 'danger' });
+            }
+            else {
+                setError(message);
+            }
+            return false;
         }
-    }, []);
+    }, [toast]);
+    const reloadFiles = useCallback((signal?: AbortSignal) => {
+        const epoch = ++loadEpoch.current;
+        setFiles(null);
+        setNextCursor(null);
+        setError(null);
+        setLoadingMore(false);
+        return loadPage(undefined, epoch, signal);
+    }, [loadPage]);
     useEffect(() => {
-        if (open)
-            void load();
-    }, [open, load]);
+        if (!open) {
+            loadEpoch.current++;
+            return;
+        }
+        const controller = new AbortController();
+        void reloadFiles(controller.signal);
+        return () => {
+            controller.abort();
+            loadEpoch.current++;
+        };
+    }, [open, reloadFiles]);
     const isImage = (file: AttachmentWithUsage) => file.mime.startsWith('image/');
     const isDocument = (file: AttachmentWithUsage) => !isImage(file) && file.mime !== 'application/octet-stream';
     const filtered = useMemo(() => {
@@ -54,7 +91,7 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
         }
     }, [files, filter]);
     const removeFile = async (file: AttachmentWithUsage) => {
-        if (busy)
+        if (busy || loadingMore)
             return;
         const ok = await confirm({
             title: t("attachments.delete_confirm_value0", { value0: file.filename }),
@@ -82,7 +119,7 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
         }
     };
     const runCleanup = async () => {
-        if (busy)
+        if (busy || loadingMore)
             return;
         const ok = await confirm({
             title: t("attachments.cleanup_confirm"),
@@ -95,7 +132,7 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
         setBusy(true);
         try {
             const result = await api.files.prune();
-            await load();
+            await reloadFiles();
             onChanged?.();
             toast({
                 title: result.removed
@@ -114,6 +151,19 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
         }
         finally {
             setBusy(false);
+        }
+    };
+    const loadMore = async () => {
+        if (busy || loadingMore || !nextCursor)
+            return;
+        setLoadingMore(true);
+        const epoch = loadEpoch.current;
+        try {
+            await loadPage(nextCursor, epoch);
+        }
+        finally {
+            if (epoch === loadEpoch.current)
+                setLoadingMore(false);
         }
     };
     return (<Drawer open={open} onClose={onClose} title={t("attachments.manage")} width={420} zIndex={230}>
@@ -142,9 +192,11 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
                         <span className="max-w-[80%] truncate text-[10px]">{file.filename}</span>
                       </div>)}
                     <div className="absolute top-1.5 right-1.5 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
-                      <IconButton label={t("attachments.delete")} size="sm" onClick={() => void removeFile(file)} className="border border-[var(--border-default)] bg-[var(--bg-overlay)] shadow-[var(--shadow-pop)] hover:text-[var(--danger)]">
-                        <Trash2 size={13}/>
-                      </IconButton>
+                      <Tooltip label={t("attachments.delete")} side="left">
+                        <IconButton label={t("attachments.delete")} size="sm" disabled={busy || loadingMore} onClick={() => void removeFile(file)} className="border border-[var(--border-default)] bg-[var(--bg-overlay)] shadow-[var(--shadow-pop)] hover:text-[var(--danger)]">
+                          <Trash2 size={13}/>
+                        </IconButton>
+                      </Tooltip>
                     </div>
                   </div>
                   <div className="space-y-0.5 px-2 py-1.5">
@@ -161,13 +213,20 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
             </div>)}
         </div>
 
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--border-subtle)] px-3 py-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] px-3 py-2">
           <span className="text-[11px] text-[var(--text-quaternary)]">
-            {files ? t("attachments.total_value0", { value0: filtered.length }) : ''}
+            {files ? (nextCursor
+                ? t("attachments.shown_value0", { value0: filtered.length })
+                : t("attachments.total_value0", { value0: filtered.length })) : ''}
           </span>
-          <Button size="sm" variant="secondary" icon={<Sparkles size={13}/>} loading={busy} onClick={() => void runCleanup()}>
-            {t("attachments.cleanup")}
-          </Button>
+          <div className="ml-auto flex items-center gap-2">
+            {nextCursor ? (<Button size="sm" variant="ghost" loading={loadingMore} disabled={busy} onClick={() => void loadMore()}>
+                {t("attachments.load_more")}
+              </Button>) : null}
+            <Button size="sm" variant="secondary" icon={<Sparkles size={13}/>} loading={busy} disabled={loadingMore} onClick={() => void runCleanup()}>
+              {t("attachments.cleanup")}
+            </Button>
+          </div>
         </div>
       </div>
     </Drawer>);

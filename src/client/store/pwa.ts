@@ -179,7 +179,16 @@ function notifyUpdate(worker: ServiceWorker): void {
 
 async function applyUpdate(worker: ServiceWorker): Promise<void> {
   const { useNotes } = await import('./notes')
-  await useNotes.getState().flush({ immediate: true }).catch(() => {})
+  try {
+    await useNotes.getState().flush({ immediate: true })
+  } catch (error) {
+    useUi.getState().toast({
+      title: t('common.save_failed'),
+      description: error instanceof Error ? error.message : String(error),
+      tone: 'danger',
+    })
+    return
+  }
   reloadForUpdate = true
   worker.postMessage({ type: 'SKIP_WAITING' })
 }

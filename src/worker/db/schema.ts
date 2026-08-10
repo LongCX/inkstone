@@ -134,6 +134,8 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_attachment_cleanup_created
      ON attachment_cleanup(created_at, object_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_attachment_cleanup_user
+     ON attachment_cleanup(user_id, created_at, object_key)`,
 
   `CREATE TABLE IF NOT EXISTS import_mappings (
     user_id TEXT NOT NULL,
@@ -226,6 +228,44 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_login_attempts_last_fail ON login_attempts(last_fail_at)`,
 
+  `CREATE TABLE IF NOT EXISTS totp_credentials (
+    user_id TEXT PRIMARY KEY,
+    secret_ciphertext TEXT NOT NULL,
+    enabled_at INTEGER,
+    pending_token_hash TEXT,
+    pending_session_id TEXT,
+    pending_expires_at INTEGER,
+    recovery_generation TEXT NOT NULL DEFAULT '',
+    last_used_step INTEGER,
+    last_used_by TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS totp_recovery_codes (
+    user_id TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    used_at INTEGER,
+    used_by TEXT,
+    PRIMARY KEY (user_id, code_hash)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_totp_recovery_codes_user
+     ON totp_recovery_codes(user_id, generation, used_at)`,
+
+  `CREATE TABLE IF NOT EXISTS totp_login_challenges (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    claimed_by TEXT,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_totp_challenges_user
+     ON totp_login_challenges(user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_totp_challenges_expires
+     ON totp_login_challenges(expires_at)`,
+
   `CREATE TABLE IF NOT EXISTS mcp_preferences (
     user_id TEXT PRIMARY KEY,
     write_enabled INTEGER NOT NULL DEFAULT 1 CHECK (write_enabled IN (0, 1)),
@@ -257,6 +297,8 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_mcp_api_keys_user
      ON mcp_api_keys(user_id, revoked_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_mcp_api_keys_revoked
+     ON mcp_api_keys(revoked_at)`,
 
   `CREATE TABLE IF NOT EXISTS ai_note_embeddings (
     user_id TEXT NOT NULL,
@@ -276,6 +318,8 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
     created_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, note_id)
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_ai_index_queue_due
+     ON ai_index_queue(user_id, created_at, note_id)`,
 
   `CREATE TABLE IF NOT EXISTS fts_index_queue (
     user_id TEXT NOT NULL,
@@ -400,6 +444,67 @@ const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_attachments_user_sha ON attachments(user_id, sha256)`,
     ],
   },
+  {
+    version: 8,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS idx_ai_index_queue_due
+         ON ai_index_queue(user_id, created_at, note_id)`,
+    ],
+  },
+  {
+    version: 9,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS idx_attachment_cleanup_user
+         ON attachment_cleanup(user_id, created_at, object_key)`,
+    ],
+  },
+  {
+    version: 10,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS idx_mcp_api_keys_revoked
+         ON mcp_api_keys(revoked_at)`,
+    ],
+  },
+  {
+    version: 11,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS totp_credentials (
+        user_id TEXT PRIMARY KEY,
+        secret_ciphertext TEXT NOT NULL,
+        enabled_at INTEGER,
+        pending_token_hash TEXT,
+        pending_session_id TEXT,
+        pending_expires_at INTEGER,
+        recovery_generation TEXT NOT NULL DEFAULT '',
+        last_used_step INTEGER,
+        last_used_by TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS totp_recovery_codes (
+        user_id TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        used_at INTEGER,
+        used_by TEXT,
+        PRIMARY KEY (user_id, code_hash)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_totp_recovery_codes_user
+         ON totp_recovery_codes(user_id, generation, used_at)`,
+      `CREATE TABLE IF NOT EXISTS totp_login_challenges (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        claimed_by TEXT,
+        created_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_totp_challenges_user
+         ON totp_login_challenges(user_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_totp_challenges_expires
+         ON totp_login_challenges(expires_at)`,
+    ],
+  },
 ]
 
 const FTS_STATEMENT = `CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
@@ -439,6 +544,9 @@ const REQUIRED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   changes: ['seq', 'user_id', 'entity', 'entity_id', 'op', 'at'],
   sessions: ['id', 'user_id', 'expires_at', 'created_at'],
   login_attempts: ['key', 'fails', 'last_fail_at', 'locked_until'],
+  totp_credentials: ['user_id', 'secret_ciphertext', 'enabled_at', 'pending_token_hash', 'pending_session_id', 'pending_expires_at', 'recovery_generation', 'last_used_step', 'last_used_by', 'created_at', 'updated_at'],
+  totp_recovery_codes: ['user_id', 'code_hash', 'generation', 'created_at', 'used_at', 'used_by'],
+  totp_login_challenges: ['id', 'user_id', 'expires_at', 'claimed_by', 'created_at'],
   mcp_preferences: ['user_id', 'write_enabled', 'trash_enabled', 'updated_at'],
   mcp_operations: ['user_id', 'operation_id', 'tool', 'request_hash', 'response_json', 'created_at'],
   mcp_api_keys: ['id', 'user_id', 'name', 'key_hash', 'scopes', 'created_at', 'last_used_at', 'revoked_at'],
@@ -467,6 +575,9 @@ const REQUIRED_TABLES = [
   'changes',
   'sessions',
   'login_attempts',
+  'totp_credentials',
+  'totp_recovery_codes',
+  'totp_login_challenges',
   'mcp_preferences',
   'mcp_operations',
   'mcp_api_keys',
@@ -492,6 +603,7 @@ const REQUIRED_INDEXES = [
   'idx_attachments_user_sha',
   'idx_attachments_note',
   'idx_attachment_cleanup_created',
+  'idx_attachment_cleanup_user',
   'idx_import_mappings_target',
   'idx_targets_user',
   'idx_runs_user',
@@ -502,9 +614,14 @@ const REQUIRED_INDEXES = [
   'idx_sessions_user',
   'idx_sessions_expires',
   'idx_login_attempts_last_fail',
+  'idx_totp_recovery_codes_user',
+  'idx_totp_challenges_user',
+  'idx_totp_challenges_expires',
   'idx_mcp_operations_created',
   'idx_mcp_api_keys_user',
+  'idx_mcp_api_keys_revoked',
   'idx_ai_embeddings_indexed',
+  'idx_ai_index_queue_due',
   'idx_fts_index_queue_due',
 ] as const
 
@@ -604,7 +721,12 @@ async function readStoredDatabaseState(db: D1Database): Promise<DatabaseState | 
 }
 
 function schemaFingerprint(): string {
-  const source = [...SCHEMA_STATEMENTS, FTS_STATEMENT].join('\n')
+  const migrationSource = SCHEMA_MIGRATIONS.map((migration) => JSON.stringify({
+    version: migration.version,
+    statements: migration.statements,
+    skipIfColumnExists: migration.skipIfColumnExists ?? null,
+  }))
+  const source = [...SCHEMA_STATEMENTS, FTS_STATEMENT, ...migrationSource].join('\n')
   let hash = 0x811c9dc5
   for (let index = 0; index < source.length; index++) {
     hash = Math.imul(hash ^ source.charCodeAt(index), 0x01000193)

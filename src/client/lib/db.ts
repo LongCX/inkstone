@@ -36,6 +36,7 @@ let pendingShell: ShellData | null = null
 let pendingShellUserId: string | null = null
 let activeUserId: string | null = null
 const supportsUserNamespaces = typeof entries === 'function' && typeof delMany === 'function'
+let forceUserNamespaces = false
 
 export interface OutboxItem {
   id: string
@@ -93,7 +94,7 @@ async function safeSet(key: string, value: unknown): Promise<void> {
 }
 
 function userScopedKey(key: string, userId = activeUserId): string {
-  return userId && supportsUserNamespaces ? `user:${userId}:${key}` : key
+  return userId && (supportsUserNamespaces || forceUserNamespaces) ? `user:${userId}:${key}` : key
 }
 
 function isLegacyDataKey(key: unknown): key is string {
@@ -118,11 +119,25 @@ async function migrateLegacyData(userId: string): Promise<void> {
 
 async function bindLocalUser(userId: string): Promise<void> {
   if (activeUserId === userId) {
+    if (forceUserNamespaces && !supportsUserNamespaces) {
+      await clearLocalData()
+      forceUserNamespaces = false
+    }
     await set(KEY.userId, userId, store)
     return
   }
   if (!supportsUserNamespaces) {
-    await clearLocalData()
+    const storedUserId = await safeGet<string>(KEY.userId)
+    if (storedUserId !== userId) {
+      try {
+        await clearLocalData()
+        forceUserNamespaces = false
+      } catch (error) {
+        activeUserId = userId
+        forceUserNamespaces = true
+        throw error
+      }
+    }
     activeUserId = userId
     await set(KEY.userId, userId, store)
     return
@@ -139,6 +154,11 @@ export const localDb = {
     if (!isRecord(value) || !isPublicUser(value.user) || !isSiteInfo(value.site)) return null
     if (value.settings !== null && !isRecord(value.settings)) return null
     if (await safeGet<string>(KEY.userId) !== value.user.id) return null
+    try {
+      await bindLocalUser(value.user.id)
+    } catch {
+      return null
+    }
     return value as unknown as SessionInfo
   },
 
@@ -392,9 +412,14 @@ export const localDb = {
   async clear(): Promise<void> {
     try {
       await clearLocalData()
-      activeUserId = null
     } catch {
+      await Promise.allSettled([
+        del(KEY.session, store),
+        del(KEY.userId, store),
+      ])
     }
+    activeUserId = null
+    forceUserNamespaces = false
   },
 }
 
@@ -492,6 +517,7 @@ export type BroadcastPayload = (
   | { type: 'claim-leader'; clientId: string; at: number }
   | { type: 'settings-changed'; clientId: string }
   | { type: 'profile-changed'; clientId: string }
+  | { type: 'site-changed'; clientId: string }
   | {
       type: 'outbox-base-advanced'
       clientId: string
@@ -536,7 +562,7 @@ export function createBroadcast(
   const channel = new BroadcastChannel('inkstone')
   channel.onmessage = (event) => {
     const payload = event.data as BroadcastPayload
-    if (payload?.userId && payload.userId !== activeUserId) return
+    if (!activeUserId || payload?.userId !== activeUserId) return
     onMessage(payload)
   }
   return {

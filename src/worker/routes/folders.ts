@@ -281,6 +281,7 @@ foldersRoutes.delete('/:id', async (c) => {
          )
          AND lower(sibling.name) = lower(child.name)
          AND sibling.deleted_at IS NULL
+         AND sibling.id != ?1
          AND sibling.id != child.id
        WHERE child.parent_id = ?1 AND child.user_id = ?2 AND child.deleted_at IS NULL
       )`
@@ -300,6 +301,11 @@ foldersRoutes.delete('/:id', async (c) => {
          SELECT ?2, 'folder', ?1, 'delete', ?4 WHERE ${guard}`,
       ).bind(id, userId, row.updated_at, now),
       c.env.DB.prepare(
+        `UPDATE folders SET deleted_at = ?4
+          WHERE id = ?1 AND user_id = ?2 AND updated_at = ?3
+            AND deleted_at IS NULL AND ${guard}`,
+      ).bind(id, userId, row.updated_at, now),
+      c.env.DB.prepare(
         `UPDATE folders SET
            parent_id = CASE WHEN parent_id = ?1 THEN ?4 ELSE parent_id END,
            position = COALESCE((
@@ -308,16 +314,20 @@ foldersRoutes.delete('/:id', async (c) => {
            ), position),
            updated_at = MAX(updated_at + 1, ?5)
           WHERE id IN (SELECT json_extract(item.value, '$.id') FROM json_each(?6) item)
-            AND user_id = ?2 AND deleted_at IS NULL AND ${guard}`,
+            AND user_id = ?2 AND deleted_at IS NULL
+            AND EXISTS (SELECT 1 FROM folders
+              WHERE id = ?1 AND user_id = ?2 AND updated_at = ?3 AND deleted_at = ?5)`,
       ).bind(id, userId, row.updated_at, row.parent_id, now, promotionJson),
       c.env.DB.prepare(
         `UPDATE notes SET folder_id = ?4, updated_at = MAX(updated_at + 1, ?5), rev = rev + 1
-          WHERE folder_id = ?1 AND user_id = ?2 AND ${guard}`,
+          WHERE folder_id = ?1 AND user_id = ?2
+            AND EXISTS (SELECT 1 FROM folders
+              WHERE id = ?1 AND user_id = ?2 AND updated_at = ?3 AND deleted_at = ?5)`,
       ).bind(id, userId, row.updated_at, row.parent_id, now),
       c.env.DB.prepare(
         `DELETE FROM folders WHERE id = ?1 AND user_id = ?2 AND updated_at = ?3
-          AND deleted_at IS NULL AND ${guard}`,
-      ).bind(id, userId, row.updated_at),
+          AND deleted_at = ?4`,
+      ).bind(id, userId, row.updated_at, now),
     ]
     const results = await c.env.DB.batch(statements)
     if (!results.at(-1)?.meta.changes) throw ApiError.conflict('The folder changed elsewhere. Refresh and try again')

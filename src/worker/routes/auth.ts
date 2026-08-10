@@ -1,10 +1,9 @@
 import { Hono, type Context } from 'hono'
 import { getCookie } from 'hono/cookie'
-import { APP_VERSION, DEFAULT_SETTINGS, mergeSettings } from '@shared/constants'
+import { DEFAULT_SETTINGS } from '@shared/constants'
 import { isBitmapAvatarDataUrl, PROFILE_NAME_MAX_LENGTH } from '@shared/avatar'
-import type { AppLocale, PublicUser, SessionInfo, SiteInfo, UserSettings } from '@shared/types'
-import type { AppBindings, Env, Variables } from '../env'
-import { selectAttachmentStorage } from '../attachments/backend'
+import type { AppLocale, SessionInfo, UserSettings } from '@shared/types'
+import type { AppBindings, Env } from '../env'
 import { drainAttachmentCleanup } from '../attachments/cleanup'
 import { attachmentCleanupTarget } from '../attachments/keys'
 import {
@@ -18,6 +17,7 @@ import { seedWorkspace } from '../db/seed'
 import { ApiError } from '../lib/errors'
 import { newId } from '../lib/id'
 import { getAllowRegistration } from '../lib/instance-settings'
+import { buildSiteInfo, loadUser, publicUser, sessionInfo } from '../lib/session-info'
 import {
   dummyVerify,
   hashPassword,
@@ -32,6 +32,7 @@ import { requireCurrentPassword } from '../lib/reauth'
 import { JSON_BODY_LIMITS, readJson, requestClientIp } from '../lib/request'
 import { commitChange } from '../lib/notify'
 import { createSession, destroyOtherSessions, destroySession } from '../lib/session-store'
+import { createTotpLoginChallenge, hasEnabledTotp } from '../lib/totp-service'
 import {
   assertNotLocked,
   clearLoginFailures,
@@ -78,63 +79,24 @@ function throttleIdentity(username: string): string {
   return USERNAME_PATTERN.test(username) ? username : '_invalid'
 }
 
-
-async function buildSiteInfo(env: Env): Promise<SiteInfo> {
-  const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM users`).first<{ n: number }>()
-  return {
-    name: env.APP_NAME || 'Inkstone',
-    initialized: (row?.n ?? 0) > 0,
-    registrationOpen: await getAllowRegistration(env.DB),
-    r2Enabled: Boolean(env.FILES),
-    kvEnabled: Boolean(env.FILES_KV),
-    attachmentStorage: selectAttachmentStorage(env),
-    realtimeEnabled: Boolean(env.SYNC_HUB),
-    version: APP_VERSION,
-  }
-}
-
-function publicUser(user: Variables['user']): PublicUser {
-  return {
-    id: user.id,
-    login: user.login,
-    name: user.name || user.login,
-    avatarUrl: user.avatarUrl,
-    role: user.role,
-    createdAt: user.createdAt,
-    username: user.username,
-  }
-}
-
-async function loadUser(env: Env, id: string): Promise<Variables['user'] | null> {
-  const row = await env.DB.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?1`)
-    .bind(id)
-    .first<Parameters<typeof rowToUser>[0]>()
-  return row ? rowToUser(row) : null
-}
-
-async function sessionInfo(env: Env, user: Variables['user']): Promise<SessionInfo> {
-  return {
-    user: publicUser(user),
-    site: await buildSiteInfo(env),
-    settings: mergeSettings(safeParse(user.settingsRaw)),
-  }
-}
-
 async function rotateSession(c: Context<AppBindings>, userId: string): Promise<string> {
-  const previous = sessionCookieNames(c.req.url)
-    .map((name) => getCookie(c, name))
-    .find(Boolean)
-  if (previous) await destroySession(c.env.DB, previous)
+  await destroyPresentedSessions(c)
   return createSession(c.env.DB, userId)
+}
+
+async function destroyPresentedSessions(c: Context<AppBindings>): Promise<void> {
+  const tokens = new Set(
+    sessionCookieNames(c.req.url)
+      .map((name) => getCookie(c, name))
+      .filter((token): token is string => Boolean(token)),
+  )
+  await Promise.all([...tokens].map((token) => destroySession(c.env.DB, token)))
 }
 
 authRoutes.get('/session', async (c) => {
   const user = c.get('user')
-  const body: SessionInfo = {
-    user: user ? publicUser(user) : null,
-    site: await buildSiteInfo(c.env),
-    settings: user ? mergeSettings(safeParse(user.settingsRaw)) : null,
-  }
+  if (user) return c.json(await sessionInfo(c.env, user))
+  const body: SessionInfo = { user: null, site: await buildSiteInfo(c.env), settings: null }
   return c.json(body)
 })
 
@@ -269,6 +231,10 @@ authRoutes.post('/login', async (c) => {
     ...workTargets.map((target) => target.key),
   ])
 
+  if (await hasEnabledTotp(db, row.id)) {
+    return c.json(await createTotpLoginChallenge(db, row.id))
+  }
+
   const token = await rotateSession(c, row.id)
   writeSessionCookie(c, token)
   return c.json(await sessionInfo(c.env, rowToUser(row)))
@@ -393,10 +359,7 @@ authRoutes.post('/password', async (c) => {
 })
 
 authRoutes.post('/logout', async (c) => {
-  const token = sessionCookieNames(c.req.url)
-    .map((name) => getCookie(c, name))
-    .find(Boolean)
-  if (token) await destroySession(c.env.DB, token)
+  await destroyPresentedSessions(c)
   clearSessionCookie(c)
   return c.json({ ok: true })
 })
@@ -442,13 +405,5 @@ function settingsFor(locale: AppLocale): UserSettings {
     preview: { ...DEFAULT_SETTINGS.preview },
     backup: { ...DEFAULT_SETTINGS.backup },
     sync: { ...DEFAULT_SETTINGS.sync },
-  }
-}
-
-function safeParse(raw: string): unknown {
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return {}
   }
 }

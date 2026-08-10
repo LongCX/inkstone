@@ -7,6 +7,7 @@ import type {
   BackupRun,
   BackupTarget,
   BackupTargetInput,
+  BackupTargetPatchInput,
   Backlink,
   Folder,
   GraphResponse,
@@ -19,6 +20,7 @@ import type {
   NoteVersion,
   NoteVersionMeta,
   PatchNoteBody,
+  PasswordLoginResult,
   PublicUser,
   PublicNote,
   SearchResponse,
@@ -27,6 +29,10 @@ import type {
   SyncResponse,
   Tag,
   TestConnectionResult,
+  TotpRecoveryCodesResult,
+  TotpLoginResult,
+  TotpSetupInfo,
+  TotpStatus,
   UpdateCheckResponse,
   UserSettings,
 } from '@shared/types'
@@ -228,20 +234,16 @@ async function saveDownload(format: 'json' | 'zip'): Promise<void> {
       return
     }
 
-    const anchor = document.createElement('a')
-    anchor.href = '/api/export?format=zip'
-    anchor.download = 'inkstone-backup.zip'
-    anchor.style.display = 'none'
-    document.body.append(anchor)
-    try {
-      anchor.click()
-    } finally {
-      anchor.remove()
-    }
+    const { response, filename } = await fetchDownload('/api/export?format=zip', 'inkstone-backup.zip')
+    await saveResponseDownload(response, filename)
     return
   }
 
   const { response, filename } = await fetchDownload('/api/export?format=json', 'inkstone-export.json')
+  await saveResponseDownload(response, filename)
+}
+
+async function saveResponseDownload(response: Response, filename: string): Promise<void> {
   const blob = await response.blob()
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -273,7 +275,40 @@ export const api = {
         body: { username, password, locale },
       }),
     login: (username: string, password: string) =>
-      request<SessionInfo>('/api/auth/login', { method: 'POST', body: { username, password } }),
+      request<PasswordLoginResult>('/api/auth/login', { method: 'POST', body: { username, password } }),
+    totp: {
+      status: () => request<TotpStatus>('/api/auth/totp/status'),
+      startSetup: (currentPassword: string) =>
+        request<TotpSetupInfo>('/api/auth/totp/setup', {
+          method: 'POST',
+          body: { currentPassword },
+        }),
+      confirmSetup: (setupToken: string, code: string) =>
+        request<TotpRecoveryCodesResult & { enabledAt: number }>('/api/auth/totp/setup/confirm', {
+          method: 'POST',
+          body: { setupToken, code },
+        }),
+      cancelSetup: (setupToken: string) =>
+        request<{ ok: true }>('/api/auth/totp/setup', {
+          method: 'DELETE',
+          body: { setupToken },
+        }),
+      completeLogin: (challengeToken: string, code: string) =>
+        request<TotpLoginResult>('/api/auth/totp/login', {
+          method: 'POST',
+          body: { challengeToken, code },
+        }),
+      regenerateRecoveryCodes: (currentPassword: string, code: string) =>
+        request<TotpRecoveryCodesResult>('/api/auth/totp/recovery-codes', {
+          method: 'POST',
+          body: { currentPassword, code },
+        }),
+      disable: (currentPassword: string, code: string) =>
+        request<{ ok: true }>('/api/auth/totp', {
+          method: 'DELETE',
+          body: { currentPassword, code },
+        }),
+    },
     setPassword: (body: {
       currentPassword: string
       newPassword: string
@@ -292,6 +327,9 @@ export const api = {
       request<{ ok: true; registrationOpen: boolean }>('/api/settings/registration', {
         method: 'PUT',
         body: { enabled, password },
+      }).then((result) => {
+        publishBroadcast({ type: 'site-changed', clientId: CLIENT_ID })
+        return result
       }),
   },
 
@@ -309,12 +347,14 @@ export const api = {
     duplicate: (id: string, body: { id?: string } = {}) =>
       request<Note>(`/api/notes/${id}/duplicate`, { method: 'POST', body }),
     emptyTrash: () => request<{ purged: number }>('/api/notes/trash/empty', { method: 'POST' }),
-    versions: (id: string) => request<{ versions: NoteVersionMeta[] }>(`/api/notes/${id}/versions`),
-    version: (id: string, versionId: string) =>
-      request<NoteVersion>(`/api/notes/${id}/versions/${versionId}`),
+    versions: (id: string, signal?: AbortSignal) =>
+      request<{ versions: NoteVersionMeta[] }>(`/api/notes/${id}/versions`, { signal }),
+    version: (id: string, versionId: string, signal?: AbortSignal) =>
+      request<NoteVersion>(`/api/notes/${id}/versions/${versionId}`, { signal }),
     restoreVersion: (id: string, versionId: string) =>
       request<Note>(`/api/notes/${id}/versions/${versionId}/restore`, { method: 'POST' }),
-    backlinks: (id: string) => request<{ backlinks: Backlink[] }>(`/api/notes/${id}/backlinks`),
+    backlinks: (id: string, signal?: AbortSignal) =>
+      request<{ backlinks: Backlink[] }>(`/api/notes/${id}/backlinks`, { signal }),
   },
 
   folders: {
@@ -346,7 +386,7 @@ export const api = {
   search: (q: string, limit = 50, signal?: AbortSignal) =>
     request<SearchResponse>(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}`, { signal }),
   reindex: () => request<{ ok: true; indexed: number }>('/api/search/reindex', { method: 'POST' }),
-  graph: (params: import('@shared/types').GraphQuery = {}) =>
+  graph: (params: import('@shared/types').GraphQuery = {}, signal?: AbortSignal) =>
     request<GraphResponse>(`/api/graph${toQuery({
       mode: params.mode,
       center: params.center,
@@ -357,7 +397,7 @@ export const api = {
       includeOrphans: params.includeOrphans === undefined ? undefined : params.includeOrphans ? 1 : 0,
       includeUnresolved: params.includeUnresolved === undefined ? undefined : params.includeUnresolved ? 1 : 0,
       limit: params.limit,
-    })}`),
+    })}`, { signal }),
 
   sync: (since: number, options: { after?: string; snapshot?: number } = {}) =>
     request<SyncResponse>(
@@ -366,7 +406,10 @@ export const api = {
     ),
 
   files: {
-    list: () => request<{ files: AttachmentWithUsage[] }>('/api/files'),
+    list: (cursor?: string, signal?: AbortSignal) => request<{ files: AttachmentWithUsage[]; nextCursor?: string | null }>(
+      `/api/files${toQuery({ cursor })}`,
+      { signal },
+    ),
     upload: (file: File, noteId?: string) => {
       const form = new FormData()
       form.append('file', file)
@@ -380,7 +423,7 @@ export const api = {
   backup: {
     targets: () => request<{ targets: BackupTarget[] }>('/api/backup/targets'),
     create: (body: BackupTargetInput) => request<BackupTarget>('/api/backup/targets', { method: 'POST', body }),
-    patch: (id: string, body: Partial<BackupTargetInput>) =>
+    patch: (id: string, body: BackupTargetPatchInput) =>
       request<BackupTarget>(`/api/backup/targets/${id}`, { method: 'PATCH', body }),
     remove: (id: string) => request<{ ok: true }>(`/api/backup/targets/${id}`, { method: 'DELETE' }),
     test: (id: string, body: Partial<BackupTargetInput> = {}) =>
@@ -422,7 +465,7 @@ export const api = {
       save: (enabled: boolean) =>
         request<McpAiSearchStatus>('/api/mcp/ai-search', { method: 'PUT', body: { enabled } }),
       reindex: () =>
-        request<{ ok: true; enqueued: number }>('/api/mcp/ai-search/reindex', { method: 'POST' }),
+        request<McpAiSearchStatus & { ok: true; enqueued: number }>('/api/mcp/ai-search/reindex', { method: 'POST' }),
       clear: () =>
         request<{ ok: true; removed: number }>('/api/mcp/ai-search/clear', { method: 'POST' }),
     },
@@ -433,7 +476,8 @@ export const api = {
   },
 
   share: {
-    get: (noteId: string) => request<{ share: ShareInfo | null }>(`/api/share/${noteId}`),
+    get: (noteId: string, signal?: AbortSignal) =>
+      request<{ share: ShareInfo | null }>(`/api/share/${noteId}`, { signal }),
     create: (noteId: string, body: { password?: string | null; expiresIn?: number | null }) =>
       request<{ share: ShareInfo }>(`/api/share/${noteId}`, { method: 'POST', body }),
     remove: (noteId: string) => request<{ ok: true }>(`/api/share/${noteId}`, { method: 'DELETE' }),

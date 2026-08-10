@@ -66,6 +66,7 @@ syncRoutes.get('/', requireAuth, async (c) => {
       facetsFull: false,
       settingsChanged: false,
       profileChanged: false,
+      siteChanged: false,
       notes: [],
       folders: [],
       tags: [],
@@ -110,6 +111,7 @@ syncRoutes.get('/', requireAuth, async (c) => {
   const facetsFull = [...latest.values()].some((item) => item.entity === 'note')
   const settingsChanged = [...latest.values()].some((item) => item.entity === 'settings')
   const profileChanged = [...latest.values()].some((item) => item.entity === 'profile')
+  const siteChanged = [...latest.values()].some((item) => item.entity === 'site')
 
   const notes = await loadInChunks(noteIds, (ids) =>
     c.env.DB.prepare(
@@ -175,6 +177,7 @@ syncRoutes.get('/', requireAuth, async (c) => {
     facetsFull,
     settingsChanged,
     profileChanged,
+    siteChanged,
     notes: notes.map(toNoteSummary),
     folders: folders.map(toFolder),
     tags: tags.map(toTag),
@@ -219,7 +222,7 @@ async function fullSnapshot(
         `SELECT ${NOTE_COLUMNS} FROM notes n WHERE n.user_id = ?1
           AND n.id > ?2 ORDER BY n.id ASC LIMIT ?3`,
       )
-      .bind(userId, after, LIMITS.syncBatchSize)
+      .bind(userId, after, LIMITS.syncBatchSize + 1)
       .all<NoteRow>(),
     !after
       ? db
@@ -241,17 +244,19 @@ async function fullSnapshot(
           .all<TagRow>()
       : Promise.resolve({ results: [] as TagRow[] }),
   ])
-  const hasMore = notes.results.length === LIMITS.syncBatchSize
+  const pageNotes = notes.results.slice(0, LIMITS.syncBatchSize)
+  const hasMore = notes.results.length > LIMITS.syncBatchSize
 
   return {
     cursor,
     full: true,
     hasMore,
-    nextKey: hasMore ? notes.results[notes.results.length - 1]!.id : null,
+    nextKey: hasMore ? pageNotes[pageNotes.length - 1]!.id : null,
     facetsFull: true,
     settingsChanged: true,
     profileChanged: true,
-    notes: notes.results.map(toNoteSummary),
+    siteChanged: true,
+    notes: pageNotes.map(toNoteSummary),
     folders: folders.results.map(toFolder),
     tags: tags.results.map(toTag),
     deletions: [],

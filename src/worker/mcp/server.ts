@@ -143,7 +143,7 @@ export function createInkstoneMcpServer(options: InkstoneMcpServerOptions): McpS
       inputSchema: z.object({
         view: z.enum(['all', 'recent', 'starred', 'archived', 'trash']).default('recent'),
         limit: z.number().int().min(1).max(50).default(20),
-        cursor: z.string().max(32).optional(),
+        cursor: z.string().max(64).optional(),
       }),
       outputSchema: generalOutputSchema,
       annotations: readOnlyAnnotations(),

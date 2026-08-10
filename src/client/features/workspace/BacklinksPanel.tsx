@@ -16,11 +16,12 @@ export function BacklinksPanel({ noteId }: {
     const rev = useNotes((s) => s.notes[noteId]?.rev ?? 0);
     const cursor = useNotes((s) => s.cursor);
     useEffect(() => {
+        const controller = new AbortController();
         let cancelled = false;
         setLinks(null);
         setLoadError(null);
         api.notes
-            .backlinks(noteId)
+            .backlinks(noteId, controller.signal)
             .then((res) => {
             if (!cancelled)
                 setLinks(res.backlinks);
@@ -31,6 +32,7 @@ export function BacklinksPanel({ noteId }: {
         });
         return () => {
             cancelled = true;
+            controller.abort();
         };
     }, [noteId, rev, cursor, reload]);
     return (<section className="max-h-[36%] shrink-0 overflow-y-auto border-t border-[var(--border-subtle)] bg-[var(--bg-base)]">

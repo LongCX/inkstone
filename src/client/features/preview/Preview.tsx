@@ -29,6 +29,8 @@ import { moveMarkdownTabFocus, selectMarkdownTab } from './markdown-tabs'
 
 export interface PreviewProps {
   content: string
+  noteId?: string
+  noteTitle?: string
   onHeadings?: (headings: Heading[]) => void
   scrollerRef?: RefObject<HTMLDivElement | null>
   onRendered?: () => void
@@ -37,6 +39,8 @@ export interface PreviewProps {
 
 export function Preview({
   content,
+  noteId,
+  noteTitle,
   onHeadings,
   scrollerRef: externalScrollerRef,
   onRendered,
@@ -54,7 +58,9 @@ export function Preview({
   const createNote = useNotes((s) => s.createNote)
   const editContent = useNotes((s) => s.editContent)
   const activeNoteId = useUi((s) => s.activeNoteId)
-  const currentTitle = useNotes((s) => (activeNoteId ? s.notes[activeNoteId]?.title ?? '' : ''))
+  const fallbackTitle = useNotes((s) => (activeNoteId ? s.notes[activeNoteId]?.title ?? '' : ''))
+  const sourceNoteId = noteId ?? activeNoteId
+  const currentTitle = noteTitle ?? fallbackTitle
 
 
   const debounced = useDebounced(content, 90)
@@ -252,12 +258,12 @@ export function Preview({
           return
         }
         const next = updateTaskAtSourceLine(committedSource, line, checked)
-        if (next == null || !activeNoteId) {
+        if (next == null || !sourceNoteId) {
           checkbox.checked = !checked
           toast({ title: t("preview.could_not_update_this_task"), tone: 'warning' })
           return
         }
-        editContent(activeNoteId, next)
+        editContent(sourceNoteId, next)
       }
       return
     }
@@ -274,9 +280,8 @@ export function Preview({
       event.preventDefault()
       wikiScrollCleanupRef.current()
       const navigation = ++wikiNavigationRef.current
-      const sourceNoteId = activeNoteId
       const parsed = parseWikiTarget(decodeDataValue(wikilink.dataset.wikilink))
-      const note = parsed.noteTitle ? findNoteByTitle(parsed.noteTitle) : activeNoteId ? useNotes.getState().notes[activeNoteId] : undefined
+      const note = parsed.noteTitle ? findNoteByTitle(parsed.noteTitle) : sourceNoteId ? useNotes.getState().notes[sourceNoteId] : undefined
       if (note) {
         void openNote(note.id).then(() => {
           const isCurrent = () =>

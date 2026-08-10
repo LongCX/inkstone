@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyRound, Lock, Moon, Sun } from 'lucide-react';
+import { LIMITS } from '@shared/constants';
 import type { PublicNote } from '@shared/types';
 import { api, ApiError } from '../../lib/api';
 import { fullTime } from '../../lib/time';
@@ -207,7 +208,7 @@ export function SharePage({ slug }: {
                 event.preventDefault();
                 void load(password);
             }}>
-              <Input aria-label={t("common.access_passcode")} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t("common.access_passcode")} autoComplete="current-password" maxLength={128} autoFocus leading={<KeyRound size={13}/>} invalid={Boolean(error)}/>
+              <Input aria-label={t("common.access_passcode")} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t("common.access_passcode")} autoComplete="current-password" maxLength={LIMITS.passwordMaxLength} autoFocus leading={<KeyRound size={13}/>} invalid={Boolean(error)}/>
               {error && <p role="alert" className="text-[12px] text-[var(--danger)]">{error}</p>}
               <Button type="submit" variant="primary" block loading={loading}>{t("share.view_content")}</Button>
             </form>

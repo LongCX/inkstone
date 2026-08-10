@@ -3,7 +3,6 @@
 
 const DEFAULT_FREE_FAILS = 5
 const WINDOW_MS = 60 * 60 * 1000
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 
 export interface ThrottleTarget {
   key: string
@@ -88,9 +87,6 @@ export async function consumeAttemptBudget(
       target.lockMs,
     ),
   )
-  statements.push(
-    db.prepare(`DELETE FROM login_attempts WHERE last_fail_at < ?1`).bind(now - RETENTION_MS),
-  )
   await db.batch(statements)
   await assertNotLocked(db, targets.map((target) => target.key))
 }
@@ -122,9 +118,6 @@ export async function recordLoginFailure(
       END`
   const statements = targets.map((target) =>
     db.prepare(sql).bind(target.key, now, WINDOW_MS, target.freeFails),
-  )
-  statements.push(
-    db.prepare(`DELETE FROM login_attempts WHERE last_fail_at < ?1`).bind(now - RETENTION_MS),
   )
   await db.batch(statements)
 }

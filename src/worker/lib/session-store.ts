@@ -2,7 +2,7 @@ import { SESSION_TTL_MS } from '@shared/constants'
 import { utf8 } from './encoding'
 
 
-function randomToken(): string {
+export function newSessionToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32))
   let out = ''
   for (const b of bytes) out += b.toString(16).padStart(2, '0')
@@ -21,14 +21,12 @@ export function isSessionToken(token: string): boolean {
 }
 
 export async function createSession(db: D1Database, userId: string): Promise<string> {
-  const token = randomToken()
+  const token = newSessionToken()
   const now = Date.now()
   await db
     .prepare(`INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)`)
     .bind(await hashToken(token), userId, now + SESSION_TTL_MS, now)
     .run()
-
-  await db.prepare(`DELETE FROM sessions WHERE expires_at < ?1`).bind(now).run()
   return token
 }
 

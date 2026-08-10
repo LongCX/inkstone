@@ -124,6 +124,42 @@ tagsRoutes.patch('/:id', async (c) => {
       const destinationName = existing?.name ?? next
       const rewrite = await rewriteTagInNotes(c, userId, id, tag.name, destinationName)
       const now = Date.now()
+      const rewrittenDestination = await c.env.DB.prepare(
+        `SELECT id FROM tags WHERE user_id = ?1 AND name = ?2 COLLATE NOCASE
+          ORDER BY created_at ASC, id ASC LIMIT 1`,
+      ).bind(userId, destinationName).first<{ id: string }>()
+      if (rewrittenDestination?.id === id) {
+        const explicitColor = body.color !== undefined ? 1 : 0
+        try {
+          const [updated] = await c.env.DB.batch([
+            c.env.DB.prepare(
+              `UPDATE tags SET name = ?4,
+                 color = CASE WHEN ?5 = 1 THEN ?6 ELSE color END,
+                 is_manual = 1
+                WHERE id = ?1 AND user_id = ?2 AND name = ?3`,
+            ).bind(id, userId, tag.name, destinationName, explicitColor, color),
+            c.env.DB.prepare(
+              `INSERT INTO changes (user_id, entity, entity_id, op, at)
+               SELECT ?2, 'tag', ?1, 'upsert', ?4
+                WHERE EXISTS (SELECT 1 FROM tags
+                  WHERE id = ?1 AND user_id = ?2 AND name = ?5)`,
+            ).bind(id, userId, tag.name, now, destinationName),
+          ])
+          if (!updated?.meta.changes) {
+            throw ApiError.conflict('The tag changed elsewhere. Refresh and try again')
+          }
+        } catch (error) {
+          try {
+            await rewrite.rollback()
+          } catch {
+            throw ApiError.conflict('Tag rename could not be rolled back safely; refresh and try again')
+          }
+          throw error
+        }
+        await broadcastCursor(c)
+        scheduleFtsDrain(c)
+        return c.json({ ok: true, renamed: rewrite.rewritten })
+      }
       const targetId = newId()
       const explicitColor = body.color !== undefined ? 1 : 0
       const sourceGuard = `EXISTS (SELECT 1 FROM tags

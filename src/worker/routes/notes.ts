@@ -20,13 +20,13 @@ import {
   LINK_TARGET_SUBQUERY,
   pruneOrphanTags,
 } from '../db/writes'
-import { sha256Hex } from '../lib/encoding'
+import { fromBase64Url, fromUtf8, sha256Hex, toBase64Url, utf8 } from '../lib/encoding'
 import { ApiError } from '../lib/errors'
 import { isValidId, newId } from '../lib/id'
 import { broadcastCursor, scheduleFtsDrain } from '../lib/notify'
 import { assertContentSize, clampInt, JSON_BODY_LIMITS, readJson } from '../lib/request'
 import { requireAuth } from '../middleware/auth'
-import { enqueueNoteIndex } from '../mcp/ai-search'
+import { enqueueNoteIndex, noteIndexQueueStatement } from '../mcp/ai-search'
 
 export const notesRoutes = new Hono<AppBindings>()
 
@@ -37,14 +37,33 @@ const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000
 
 const SNAPSHOT_DIFF_THRESHOLD = 400
 
+interface NotesListCursor {
+  view: ViewKind
+  sort: SortKey
+  order: SortOrder
+  pinned: number
+  value: string | number
+  id: string
+}
+
+type ParsedNotesListCursor =
+  | { kind: 'first' }
+  | { kind: 'legacy'; offset: number }
+  | { kind: 'keyset'; cursor: NotesListCursor }
+
+const NOTE_VIEWS = new Set<ViewKind>(['all', 'recent', 'starred', 'unfiled', 'archived', 'trash', 'folder', 'tag'])
+const NOTE_SORTS = new Set<SortKey>(['updated', 'created', 'title'])
+
 
 notesRoutes.get('/', async (c) => {
   const userId = c.get('userId')
-  const view = (c.req.query('view') as ViewKind) || 'all'
-  const sort = (c.req.query('sort') as SortKey) || 'updated'
+  const requestedView = c.req.query('view') as ViewKind | undefined
+  const requestedSort = c.req.query('sort') as SortKey | undefined
+  const view = requestedView && NOTE_VIEWS.has(requestedView) ? requestedView : 'all'
+  const sort = requestedSort && NOTE_SORTS.has(requestedSort) ? requestedSort : 'updated'
   const order: SortOrder = c.req.query('order') === 'asc' ? 'asc' : 'desc'
   const limit = clampInt(c.req.query('limit'), 1, 1000, 500)
-  const offset = clampInt(c.req.query('cursor'), 0, 1_000_000, 0)
+  const cursor = parseNotesListCursor(c.req.query('cursor'), view, sort, order)
 
   const binds: unknown[] = [userId]
   let where = 'n.user_id = ?1'
@@ -71,33 +90,84 @@ notesRoutes.get('/', async (c) => {
     if (!tag) throw ApiError.badRequest('Missing tag')
     binds.push(tag)
     where += ` AND EXISTS (SELECT 1 FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
-                 WHERE nt.note_id = n.id AND t.name = ?${binds.length})`
+                 WHERE nt.note_id = n.id AND t.user_id = n.user_id
+                   AND t.name = ?${binds.length} COLLATE NOCASE)`
   }
 
+  const countWhere = where
+  const countBinds = [...binds]
+
   const dir = order === 'asc' ? 'ASC' : 'DESC'
+  const valueColumn = view === 'trash'
+    ? 'n.deleted_at'
+    : sort === 'created'
+      ? 'n.created_at'
+      : sort === 'title'
+        ? 'n.title'
+        : 'n.updated_at'
+  const valueCollation = sort === 'title' && view !== 'trash' ? ' COLLATE NOCASE' : ''
   const orderBy =
     view === 'trash'
-      ? `n.deleted_at ${dir}`
+      ? `n.deleted_at ${dir}, n.id ASC`
       : ({
-          updated: `n.is_pinned DESC, n.updated_at ${dir}`,
-          created: `n.is_pinned DESC, n.created_at ${dir}`,
-          title: `n.is_pinned DESC, n.title COLLATE NOCASE ${dir}`,
-        }[sort] ?? `n.is_pinned DESC, n.updated_at ${dir}`)
+          updated: `n.is_pinned DESC, n.updated_at ${dir}, n.id ASC`,
+          created: `n.is_pinned DESC, n.created_at ${dir}, n.id ASC`,
+          title: `n.is_pinned DESC, n.title COLLATE NOCASE ${dir}, n.id ASC`,
+        }[sort] ?? `n.is_pinned DESC, n.updated_at ${dir}, n.id ASC`)
 
+  if (cursor.kind === 'keyset') {
+    const comparison = order === 'asc' ? '>' : '<'
+    if (view === 'trash') {
+      binds.push(cursor.cursor.value, cursor.cursor.value, cursor.cursor.id)
+      const valueBind = binds.length - 2
+      const repeatedValueBind = binds.length - 1
+      const idBind = binds.length
+      where += ` AND (${valueColumn}${valueCollation} ${comparison} ?${valueBind}
+        OR (${valueColumn}${valueCollation} = ?${repeatedValueBind} AND n.id > ?${idBind}))`
+    } else {
+      binds.push(
+        cursor.cursor.pinned,
+        cursor.cursor.pinned,
+        cursor.cursor.value,
+        cursor.cursor.value,
+        cursor.cursor.id,
+      )
+      const firstPinnedBind = binds.length - 4
+      const repeatedPinnedBind = binds.length - 3
+      const valueBind = binds.length - 2
+      const repeatedValueBind = binds.length - 1
+      const idBind = binds.length
+      where += ` AND (n.is_pinned < ?${firstPinnedBind}
+        OR (n.is_pinned = ?${repeatedPinnedBind} AND (
+          ${valueColumn}${valueCollation} ${comparison} ?${valueBind}
+          OR (${valueColumn}${valueCollation} = ?${repeatedValueBind} AND n.id > ?${idBind})
+        )))`
+    }
+  }
+
+  const listSql = cursor.kind === 'legacy'
+    ? `SELECT ${NOTE_COLUMNS} FROM notes n WHERE ${where} ORDER BY ${orderBy}
+       LIMIT ?${binds.length + 1} OFFSET ?${binds.length + 2}`
+    : `SELECT ${NOTE_COLUMNS} FROM notes n WHERE ${where} ORDER BY ${orderBy}
+       LIMIT ?${binds.length + 1}`
+  const listStatement = cursor.kind === 'legacy'
+    ? c.env.DB.prepare(listSql).bind(...binds, limit + 1, cursor.offset)
+    : c.env.DB.prepare(listSql).bind(...binds, limit + 1)
   const [countResult, listResult] = await c.env.DB.batch([
-    c.env.DB.prepare(`SELECT COUNT(*) AS total FROM notes n WHERE ${where}`).bind(...binds),
-    c.env.DB.prepare(
-      `SELECT ${NOTE_COLUMNS} FROM notes n WHERE ${where} ORDER BY ${orderBy}
-       LIMIT ?${binds.length + 1} OFFSET ?${binds.length + 2}`,
-    ).bind(...binds, limit, offset),
+    c.env.DB.prepare(`SELECT COUNT(*) AS total FROM notes n WHERE ${countWhere}`).bind(...countBinds),
+    listStatement,
   ])
 
   const total = Number((countResult?.results?.[0] as { total?: unknown } | undefined)?.total ?? 0)
-  const notes = (listResult?.results as NoteRow[] | undefined ?? []).map(toNoteSummary)
+  const rows = listResult?.results as NoteRow[] | undefined ?? []
+  const pageRows = rows.slice(0, limit)
+  const notes = pageRows.map(toNoteSummary)
   const body: ListNotesResponse = {
     notes,
     total,
-    nextCursor: nextNotesCursor(offset, notes.length, total),
+    nextCursor: rows.length > limit && pageRows.length
+      ? encodeNotesListCursor(pageRows[pageRows.length - 1]!, view, sort, order)
+      : null,
   }
   return c.json(body)
 })
@@ -111,9 +181,10 @@ notesRoutes.post('/trash/empty', async (c) => {
   )
     .bind(userId)
     .first<{ count: number }>()
-  const purged = row?.count ?? 0
+  let purged = 0
+  let deletionCursor: number | undefined
 
-  if (purged) {
+  if ((row?.count ?? 0) > 0) {
     const trashed = `SELECT id FROM notes WHERE user_id = ?1 AND deleted_at IS NOT NULL`
     const statements = [
       c.env.DB.prepare(`DELETE FROM note_tags WHERE note_id IN (${trashed})`).bind(userId),
@@ -155,21 +226,24 @@ notesRoutes.post('/trash/empty', async (c) => {
         .prepare(
           `INSERT INTO changes (user_id, entity, entity_id, op, at)
            SELECT ?1, 'note', id, 'delete', ?2
-             FROM notes WHERE user_id = ?1 AND deleted_at IS NOT NULL
-           RETURNING seq`,
+             FROM notes WHERE user_id = ?1 AND deleted_at IS NOT NULL`,
         )
         .bind(userId, Date.now()),
+      c.env.DB
+        .prepare(`SELECT seq FROM changes WHERE user_id = ?1 ORDER BY seq DESC LIMIT 1`)
+        .bind(userId),
       c.env.DB
         .prepare(`DELETE FROM notes WHERE user_id = ?1 AND deleted_at IS NOT NULL`)
         .bind(userId),
     )
     const results = await c.env.DB.batch(statements)
     const changeResult = results.at(-2) as D1Result<{ seq: number }> | undefined
-    await broadcastCursor(c, changeResult?.results?.[0]?.seq)
-    scheduleFtsDrain(c)
+    purged = results.at(-1)?.meta.changes ?? 0
+    deletionCursor = changeResult?.results?.at(-1)?.seq
+    if (purged) scheduleFtsDrain(c)
   }
   await pruneOrphanTags(c.env.DB, userId)
-  await broadcastCursor(c)
+  await broadcastCursor(c, deletionCursor)
   return c.json({ purged })
 })
 
@@ -441,12 +515,17 @@ notesRoutes.patch('/:id', async (c) => {
   const changeResult = results.at(-1) as D1Result<{ seq: number }> | undefined
   let rewroteInbound = false
   if (newTitle !== row.title) {
-    const duplicate = await c.env.DB.prepare(
+    const ambiguous = await c.env.DB.prepare(
       `SELECT 1 AS found FROM notes
-        WHERE user_id = ?1 AND id <> ?2 AND deleted_at IS NULL AND title_key = ?3
+        WHERE user_id = ?1 AND id <> ?2 AND deleted_at IS NULL AND title_key IN (?3, ?4)
         LIMIT 1`,
-    ).bind(userId, id, normalizeLinkKey(newTitle)).first<{ found: number }>()
-    if (!duplicate) {
+    ).bind(
+      userId,
+      id,
+      normalizeLinkKey(row.title),
+      normalizeLinkKey(newTitle),
+    ).first<{ found: number }>()
+    if (!ambiguous) {
       const rewrite = await rewriteInboundWikiLinks(
         c.env.DB,
         userId,
@@ -459,6 +538,21 @@ notesRoutes.patch('/:id', async (c) => {
         console.warn(`Could not update ${rewrite.skipped} wiki-link source notes after renaming note ${id}`)
       }
       rewroteInbound = rewrite.rewritten > 0
+    } else {
+      await c.env.DB.prepare(
+        `UPDATE links SET target_note_id = ${LINK_TARGET_SUBQUERY}
+          WHERE user_id = ?1 AND target_key = ?2
+            AND EXISTS (SELECT 1 FROM notes
+              WHERE id = ?3 AND user_id = ?1 AND rev = ?4
+                AND title = ?5 AND updated_at = ?6 AND deleted_at IS NULL)`,
+      ).bind(
+        userId,
+        normalizeLinkKey(row.title),
+        id,
+        nextRev,
+        newTitle,
+        now,
+      ).run()
     }
   }
   await broadcastCursor(c, rewroteInbound ? undefined : changeResult?.results?.[0]?.seq)
@@ -702,7 +796,21 @@ notesRoutes.post('/:id/duplicate', async (c) => {
     expectedTitle: title,
     expectedUpdatedAt: now,
   }).statements
-  await c.env.DB.batch([insert, ...derived, changeStatement(c.env.DB, userId, 'note', id, 'upsert')])
+  try {
+    await c.env.DB.batch([insert, ...derived, changeStatement(c.env.DB, userId, 'note', id, 'upsert')])
+  } catch (error) {
+    if (body.id) {
+      const existing = await c.env.DB.prepare(
+        `SELECT ${NOTE_COLUMNS_FULL} FROM notes n WHERE n.id = ?1 AND n.user_id = ?2`,
+      ).bind(id, userId).first<NoteRow>()
+      if (existing) return c.json(toNote(existing))
+      const collision = await c.env.DB.prepare(`SELECT user_id FROM notes WHERE id = ?1`)
+        .bind(id)
+        .first<{ user_id: string }>()
+      if (collision) throw ApiError.conflict('This note id is already in use')
+    }
+    throw error
+  }
   await broadcastCursor(c)
   await enqueueNoteIndex(c.env.DB, userId, id, 'embed')
   scheduleFtsDrain(c)
@@ -920,7 +1028,7 @@ async function rewriteInboundWikiLinks(
         updated_at: number
         deleted_at: number | null
       }>()
-      if (!note) {
+      if (!note || note.deleted_at !== null) {
         complete = true
         break
       }
@@ -967,6 +1075,7 @@ async function rewriteInboundWikiLinks(
         expectedTitle: note.title,
         expectedUpdatedAt: now,
       }).statements)
+      statements.push(noteIndexQueueStatement(db, userId, note.id, 'embed', now))
       statements.push(
         db.prepare(
           `INSERT INTO changes (user_id, entity, entity_id, op, at)
@@ -1042,7 +1151,7 @@ function applyPatchRow(
         break
     }
   }
-  if (tagNames) next.tag_names = tagNames.join('\u0001')
+  if (tagNames !== null) next.tag_names = tagNames.join('\u0001')
   return next
 }
 
@@ -1057,6 +1166,65 @@ export function resolveNoteTitle(title: string | undefined, current = ''): strin
 export function nextNotesCursor(offset: number, returned: number, total: number): string | null {
   const next = offset + returned
   return returned > 0 && next < total ? String(next) : null
+}
+
+export function encodeNotesListCursor(
+  row: NoteRow,
+  view: ViewKind,
+  sort: SortKey,
+  order: SortOrder,
+): string {
+  const value = view === 'trash'
+    ? row.deleted_at
+    : sort === 'created'
+      ? row.created_at
+      : sort === 'title'
+        ? row.title
+        : row.updated_at
+  const payload: NotesListCursor = {
+    view,
+    sort,
+    order,
+    pinned: view === 'trash' ? 0 : row.is_pinned,
+    value: value ?? 0,
+    id: row.id,
+  }
+  return `n1.${toBase64Url(utf8(JSON.stringify(payload)))}`
+}
+
+export function parseNotesListCursor(
+  raw: string | undefined,
+  view: ViewKind,
+  sort: SortKey,
+  order: SortOrder,
+): ParsedNotesListCursor {
+  if (!raw) return { kind: 'first' }
+  if (/^\d+$/.test(raw)) {
+    return { kind: 'legacy', offset: clampInt(raw, 0, 1_000_000, 0) }
+  }
+  if (raw.length > 4096 || !raw.startsWith('n1.')) throw ApiError.badRequest('Invalid notes cursor')
+  try {
+    const value = JSON.parse(fromUtf8(fromBase64Url(raw.slice(3)))) as Partial<NotesListCursor>
+    const expectedTitle = view !== 'trash' && sort === 'title'
+    const validValue = expectedTitle
+      ? typeof value.value === 'string' && value.value.length <= LIMITS.titleMaxLength
+      : typeof value.value === 'number' && Number.isSafeInteger(value.value) && value.value >= 0
+    if (
+      value.view !== view ||
+      value.sort !== sort ||
+      value.order !== order ||
+      (value.pinned !== 0 && value.pinned !== 1) ||
+      !validValue ||
+      typeof value.id !== 'string' ||
+      value.id.length < 1 ||
+      value.id.length > 128
+    ) {
+      throw new Error('invalid')
+    }
+    return { kind: 'keyset', cursor: value as NotesListCursor }
+  } catch {
+    throw ApiError.badRequest('Invalid notes cursor')
+  }
 }
 
 function push(sets: string[], binds: unknown[], column: string, value: unknown): void {

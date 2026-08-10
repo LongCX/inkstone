@@ -11,6 +11,7 @@ export const JSON_BODY_LIMITS = {
 } as const
 
 export const FORM_BODY_LIMITS = {
+  authorization: 16 * 1024,
   attachment: LIMITS.attachmentMaxBytes + 512 * 1024,
   import: LIMITS.importUploadMaxBytes + 1024 * 1024,
 } as const
@@ -70,6 +71,22 @@ export async function readFormDataWithinLimit(
   } catch {
     throw ApiError.badRequest('The upload form is invalid')
   }
+}
+
+export async function readUrlEncodedFormWithinLimit(
+  req: {
+    raw?: Request
+    header?: (name: string) => string | undefined
+  },
+  maxBytes: number,
+): Promise<URLSearchParams> {
+  assertDeclaredBodySize(req, maxBytes)
+  const contentType = req.header?.('Content-Type') ?? req.raw?.headers.get('Content-Type') ?? ''
+  if (!/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(contentType)) {
+    throw ApiError.badRequest('The request body must use application/x-www-form-urlencoded')
+  }
+  const bytes = await readBytesWithinLimit(req.raw?.body, maxBytes)
+  return new URLSearchParams(new TextDecoder().decode(bytes))
 }
 
 

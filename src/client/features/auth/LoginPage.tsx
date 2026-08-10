@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react'
-import { Loader2, TriangleAlert } from 'lucide-react'
+import { ArrowLeft, KeyRound, Loader2, TriangleAlert } from 'lucide-react'
+import { LIMITS } from '@shared/constants'
+import type { TotpLoginChallenge } from '@shared/types'
 import { Logo } from '../../components/primitives'
 import { Input } from '../../components/form'
 import { cn } from '../../lib/cn'
@@ -13,6 +15,7 @@ export function LoginPage() {
   const site = useSession((state) => state.site)
   const authError = useSession((state) => state.authError)
   const passwordLogin = useSession((state) => state.passwordLogin)
+  const totpLogin = useSession((state) => state.totpLogin)
   const passwordRegister = useSession((state) => state.passwordRegister)
   const firstRun = Boolean(site && !site.initialized)
   const [mode, setMode] = useState<'login' | 'register'>(firstRun ? 'register' : 'login')
@@ -21,6 +24,9 @@ export function LoginPage() {
   const [confirmation, setConfirmation] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [challenge, setChallenge] = useState<TotpLoginChallenge | null>(null)
+  const [verificationCode, setVerificationCode] = useState('')
+  const [recoveryMode, setRecoveryMode] = useState(false)
   const busyRef = useRef(false)
   const registerMode = mode === 'register' || firstRun
   const showModeSwitch = !firstRun && site?.registrationOpen
@@ -28,6 +34,27 @@ export function LoginPage() {
   const submit = async () => {
     if (busyRef.current) return
     setError(null)
+    if (challenge) {
+      if (!verificationCode.trim()) {
+        setError(recoveryMode ? t('auth.enter_recovery_code') : t('auth.enter_authenticator_code'))
+        return
+      }
+      busyRef.current = true
+      setBusy(true)
+      try {
+        await totpLogin(challenge.challengeToken, verificationCode)
+      } catch (caught) {
+        busyRef.current = false
+        setBusy(false)
+        if (caught instanceof ApiError && caught.code === 'two_factor_challenge_expired') {
+          setChallenge(null)
+          setVerificationCode('')
+          setRecoveryMode(false)
+        }
+        setError(caught instanceof ApiError ? caught.message : t('auth.network_error_try_again'))
+      }
+      return
+    }
     if (!username.trim() || !password) {
       setError(t("auth.enter_a_username_and_password"))
       return
@@ -41,7 +68,18 @@ export function LoginPage() {
     setBusy(true)
     try {
       if (registerMode) await passwordRegister(username.trim(), password)
-      else await passwordLogin(username.trim(), password)
+      else {
+        const nextChallenge = await passwordLogin(username.trim(), password)
+        if (nextChallenge) {
+          setChallenge(nextChallenge)
+          setPassword('')
+          setConfirmation('')
+          setVerificationCode('')
+          setRecoveryMode(false)
+          busyRef.current = false
+          setBusy(false)
+        }
+      }
     } catch (caught) {
       busyRef.current = false
       setBusy(false)
@@ -71,7 +109,9 @@ export function LoginPage() {
             {t("common.product_name")}
           </h1>
           <p className="mt-2.5 text-[13px] leading-relaxed text-[var(--text-tertiary)]">
-            {firstRun
+            {challenge
+              ? t('auth.two_step_verification_description')
+              : firstRun
               ? t("auth.create_the_owner_account_this_step_appears_only_once")
               : t("auth.between_the_paper_and_ink_the_pen_comes_to_life_an_inkstone_is_used_to_p")}
           </p>
@@ -84,30 +124,60 @@ export function LoginPage() {
             void submit()
           }}
         >
-          <Input
-            aria-label={t("common.username")}
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            disabled={busy}
-            placeholder={t("common.username")}
-            autoComplete="username"
-            autoCapitalize="none"
-            spellCheck={false}
-          />
-          <Input
-            aria-label={t("common.password")}
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            disabled={busy}
-            placeholder={registerMode ? t("auth.password_minimum_8_characters") : t("common.password")}
-            autoComplete={registerMode ? 'new-password' : 'current-password'}
-          />
-          {registerMode && (
+          {challenge ? (
+            <>
+              <div className="mb-3 flex items-center gap-2 rounded-[var(--r-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2.5 text-[12px] text-[var(--text-secondary)]">
+                <KeyRound size={14} className="shrink-0 text-[var(--accent)]" />
+                <span className="min-w-0 truncate">@{username.trim()}</span>
+              </div>
+              <Input
+                aria-label={recoveryMode ? t('auth.recovery_code') : t('auth.authenticator_code')}
+                value={verificationCode}
+                maxLength={recoveryMode ? 24 : 8}
+                onChange={(event) => setVerificationCode(
+                  recoveryMode
+                    ? event.target.value.toUpperCase()
+                    : event.target.value.replace(/\D/g, '').slice(0, 6),
+                )}
+                disabled={busy}
+                placeholder={recoveryMode ? 'XXXX-XXXX-XXXX-XXXX' : '000000'}
+                autoComplete={recoveryMode ? 'off' : 'one-time-code'}
+                autoCapitalize={recoveryMode ? 'characters' : 'none'}
+                inputMode={recoveryMode ? 'text' : 'numeric'}
+                spellCheck={false}
+                autoFocus
+              />
+            </>
+          ) : (
+            <>
+              <Input
+                aria-label={t("common.username")}
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                disabled={busy}
+                placeholder={t("common.username")}
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+              />
+              <Input
+                aria-label={t("common.password")}
+                type="password"
+                value={password}
+                maxLength={LIMITS.passwordMaxLength}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={busy}
+                placeholder={registerMode ? t("auth.password_minimum_8_characters") : t("common.password")}
+                autoComplete={registerMode ? 'new-password' : 'current-password'}
+              />
+            </>
+          )}
+          {!challenge && registerMode && (
             <Input
               aria-label={t("auth.confirm_password")}
               type="password"
               value={confirmation}
+              maxLength={LIMITS.passwordMaxLength}
               onChange={(event) => setConfirmation(event.target.value)}
               disabled={busy}
               placeholder={t("auth.confirm_password")}
@@ -125,9 +195,43 @@ export function LoginPage() {
             )}
           >
             {busy && <Loader2 size={16} className="animate-[ink-spin_.7s_linear_infinite]" />}
-            {registerMode ? (firstRun ? t("auth.create_owner_account") : t("auth.sign_up")) : t("auth.sign_in")}
+            {challenge
+              ? t('auth.verify_and_sign_in')
+              : registerMode
+                ? (firstRun ? t("auth.create_owner_account") : t("auth.sign_up"))
+                : t("auth.sign_in")}
           </button>
-          {showModeSwitch && (
+          {challenge && (
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setChallenge(null)
+                  setVerificationCode('')
+                  setRecoveryMode(false)
+                  setError(null)
+                }}
+                className="inline-flex items-center gap-1 text-[12px] text-[var(--text-tertiary)] transition-colors hover:text-[var(--accent)]"
+              >
+                <ArrowLeft size={12} />
+                {t('auth.back_to_password')}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setRecoveryMode((value) => !value)
+                  setVerificationCode('')
+                  setError(null)
+                }}
+                className="text-[12px] text-[var(--text-tertiary)] transition-colors hover:text-[var(--accent)]"
+              >
+                {recoveryMode ? t('auth.use_authenticator_code') : t('auth.use_recovery_code')}
+              </button>
+            </div>
+          )}
+          {!challenge && showModeSwitch && (
             <button
               type="button"
               disabled={busy}

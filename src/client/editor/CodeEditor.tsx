@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Annotation, EditorState, type Extension } from '@codemirror/state';
+import { Annotation, Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, drawSelection, dropCursor, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, keymap, lineNumbers, placeholder as placeholderExt, rectangularSelection, } from '@codemirror/view';
 import { bracketMatching, foldGutter, indentOnInput, indentUnit, syntaxHighlighting, defaultHighlightStyle, } from '@codemirror/language';
 import { defaultKeymap, history, historyKeymap, indentWithTab, standardKeymap, } from '@codemirror/commands';
@@ -35,6 +35,11 @@ export function CodeEditor({ value, onChange, settings, sources, handlers, onRea
 
     const cbRef = useRef({ onChange, onScroll, onCursorLine, sources, handlers });
     cbRef.current = { onChange, onScroll, onCursorLine, sources, handlers };
+
+    const lineNumbersCompartment = useRef(new Compartment());
+    const tabSizeCompartment = useRef(new Compartment());
+    const placeholderCompartment = useRef(new Compartment());
+
     useEffect(() => {
         const host = hostRef.current;
         if (!host)
@@ -50,11 +55,13 @@ export function CodeEditor({ value, onChange, settings, sources, handlers, onRea
             bracketMatching(),
             closeBrackets(),
             indentOnInput(),
-            indentUnit.of(' '.repeat(settings.tabSize)),
+            tabSizeCompartment.current.of(indentUnit.of(' '.repeat(settings.tabSize))),
             EditorState.allowMultipleSelections.of(true),
             EditorView.lineWrapping,
-            EditorView.contentAttributes.of({ 'aria-label': placeholder }),
-            placeholderExt(placeholder),
+            placeholderCompartment.current.of([
+                placeholderExt(placeholder),
+                EditorView.contentAttributes.of({ 'aria-label': placeholder }),
+            ]),
             search({ top: true }),
             autocompletion({
                 override: [
@@ -103,6 +110,11 @@ export function CodeEditor({ value, onChange, settings, sources, handlers, onRea
             keymap.of(standardKeymap),
             keymap.of(defaultKeymap),
             keymap.of([indentWithTab]),
+            lineNumbersCompartment.current.of(
+                settings.lineNumbers
+                    ? [lineNumbers(), highlightActiveLineGutter(), foldGutter()]
+                    : [],
+            ),
             EditorView.updateListener.of((update) => {
                 const external = update.transactions.some((transaction) => transaction.annotation(externalValueUpdate));
                 if (update.docChanged && !external) {
@@ -119,9 +131,6 @@ export function CodeEditor({ value, onChange, settings, sources, handlers, onRea
                 },
             }),
         ];
-        if (settings.lineNumbers) {
-            extensions.push(lineNumbers(), highlightActiveLineGutter(), foldGutter());
-        }
         const view = new EditorView({
             state: EditorState.create({ doc: value, extensions }),
             parent: host,
@@ -134,9 +143,40 @@ export function CodeEditor({ value, onChange, settings, sources, handlers, onRea
             view.destroy();
             viewRef.current = null;
         };
+    }, []);
 
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        view.dispatch({
+            effects: lineNumbersCompartment.current.reconfigure(
+                settings.lineNumbers
+                    ? [lineNumbers(), highlightActiveLineGutter(), foldGutter()]
+                    : [],
+            ),
+        });
+    }, [settings.lineNumbers]);
 
-    }, [settings.lineNumbers, settings.tabSize, placeholder]);
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        view.dispatch({
+            effects: tabSizeCompartment.current.reconfigure(
+                indentUnit.of(' '.repeat(settings.tabSize)),
+            ),
+        });
+    }, [settings.tabSize]);
+
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        view.dispatch({
+            effects: placeholderCompartment.current.reconfigure([
+                placeholderExt(placeholder),
+                EditorView.contentAttributes.of({ 'aria-label': placeholder }),
+            ]),
+        });
+    }, [placeholder]);
 
     useEffect(() => {
         const view = viewRef.current;

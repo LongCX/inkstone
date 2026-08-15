@@ -91,18 +91,20 @@ export function SettingsPanel({ onClose }: {
           </header>
 
           <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-[calc(16px+env(safe-area-inset-bottom))] md:px-5 md:py-4">
-            {section === 'appearance' && <AppearanceSettings accents={ACCENTS}/>}
-            {section === 'editor' && <EditorSettings />}
-            {section === 'sync' && <SyncSettings />}
-            {section === 'mcp' && (<Suspense fallback={<LoadingBlock label={t("settings.mcp_loading")}/>}> 
-                <McpSettings />
-              </Suspense>)}
-            {section === 'account' && <AccountSettings />}
-            {section === 'data' && <DataSettings />}
-            {section === 'about' && <AboutSettings />}
-            {section === 'backup' && (<Suspense fallback={<LoadingBlock label={t("settings.loading_backup_settings")}/>}>
-                <BackupSettings />
-              </Suspense>)}
+            <div key={section} className="anim-view-content">
+              {section === 'appearance' && <AppearanceSettings accents={ACCENTS}/>}
+              {section === 'editor' && <EditorSettings />}
+              {section === 'sync' && <SyncSettings />}
+              {section === 'mcp' && (<Suspense fallback={<LoadingBlock label={t("settings.mcp_loading")}/>}> 
+                  <McpSettings />
+                </Suspense>)}
+              {section === 'account' && <AccountSettings />}
+              {section === 'data' && <DataSettings />}
+              {section === 'about' && <AboutSettings />}
+              {section === 'backup' && (<Suspense fallback={<LoadingBlock label={t("settings.loading_backup_settings")}/> }>
+                  <BackupSettings />
+                </Suspense>)}
+            </div>
           </div>
         </div>
       </div>

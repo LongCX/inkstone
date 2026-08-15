@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArrowDown, ArrowUp, ChevronRight, Clock, CornerUpLeft, FilePlus2, FileText, FolderClosed, FolderInput, FolderOpen, FolderPlus, Hash, Inbox, LogOut, Moon, MoreHorizontal, Palette, PanelLeft, PanelLeftClose, Pencil, Plus, Settings, Star, Sun, Trash2, Waypoints, } from 'lucide-react';
 import { LIMITS } from '@shared/constants';
 import type { Tag, ViewKind } from '@shared/types';
@@ -243,11 +243,14 @@ function FolderSection() {
     const expandFolder = useUi((s) => s.expandFolder);
     const [creating, setCreating] = useState(false);
     const creatingRef = useRef(false);
+    const createdTimerRef = useRef<number>(0);
+    const [createdFolderId, setCreatedFolderId] = useState<string | null>(null);
     const movingIdsRef = useRef(new Set<string>());
     const [renamingId, setRenamingId] = useState<string | null>(null);
     const [movingId, setMovingId] = useState<string | null>(null);
     const [appearanceId, setAppearanceId] = useState<string | null>(null);
     const [rootDropping, setRootDropping] = useState(false);
+    useEffect(() => () => window.clearTimeout(createdTimerRef.current), []);
     const create = (parentId: string | null) => {
         if (creatingRef.current)
             return;
@@ -264,6 +267,9 @@ function FolderSection() {
             const folderId = createFolder({ parentId });
             if (!folderId)
                 return;
+            window.clearTimeout(createdTimerRef.current);
+            setCreatedFolderId(folderId);
+            createdTimerRef.current = window.setTimeout(() => setCreatedFolderId(null), 1000);
             const currentUi = useUi.getState();
             if (currentUi.view === startingNavigation.view &&
                 currentUi.folderId === startingNavigation.folderId &&
@@ -344,7 +350,7 @@ function FolderSection() {
 
       {tree.length === 0 ? (<button type="button" disabled={creating} onClick={() => void create(null)} className="mt-0.5 flex h-10 w-full items-center gap-2 rounded-[var(--r-md)] px-2 text-[12px] text-[var(--text-quaternary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)] disabled:pointer-events-none disabled:opacity-45 md:h-[30px]">
           <FolderPlus size={13}/>{t("sidebar.create_first_folder")}</button>) : (<div role="tree" aria-label={t("navigation.folder")} className="mt-0.5 space-y-px">
-          {tree.map((node, index) => (<FolderRow key={node.id} node={node} siblings={tree} index={index} parentNode={null} parentSiblings={[]} onCreateChild={create} onMove={move} onChooseParent={setMovingId} onEditAppearance={setAppearanceId} renamingId={renamingId} onStartRename={setRenamingId} onFinishRename={() => setRenamingId(null)}/>))}
+          {tree.map((node, index) => (<FolderRow key={node.id} node={node} siblings={tree} index={index} parentNode={null} parentSiblings={[]} onCreateChild={create} onMove={move} onChooseParent={setMovingId} onEditAppearance={setAppearanceId} createdFolderId={createdFolderId} renamingId={renamingId} onStartRename={setRenamingId} onFinishRename={() => setRenamingId(null)}/>))}
         </div>)}
       </section>
       <FolderPicker open={Boolean(movingFolder)} title={t("folders.choose_parent")} folders={folders} currentId={movingFolder?.parentId ?? null} excludedIds={excludedMoveTargets} onSelect={(parentId) => {
@@ -357,7 +363,7 @@ function FolderSection() {
         }} onClose={() => setAppearanceId(null)}/>
     </>);
 }
-function FolderRow({ node, siblings, index, parentNode, parentSiblings, onCreateChild, onMove, onChooseParent, onEditAppearance, renamingId, onStartRename, onFinishRename, }: {
+function FolderRow({ node, siblings, index, parentNode, parentSiblings, onCreateChild, onMove, onChooseParent, onEditAppearance, createdFolderId, renamingId, onStartRename, onFinishRename, }: {
     node: FolderNode;
     siblings: FolderNode[];
     index: number;
@@ -367,6 +373,7 @@ function FolderRow({ node, siblings, index, parentNode, parentSiblings, onCreate
     onMove: (id: string, parentId: string | null, beforeId: string | null) => boolean;
     onChooseParent: (id: string) => void;
     onEditAppearance: (id: string) => void;
+    createdFolderId: string | null;
     renamingId: string | null;
     onStartRename: (id: string) => void;
     onFinishRename: () => void;
@@ -388,8 +395,26 @@ function FolderRow({ node, siblings, index, parentNode, parentSiblings, onCreate
     const [menuOpen, setMenuOpen] = useState(false);
     const active = view === 'folder' && activeFolderId === node.id;
     const hasChildren = node.children.length > 0;
+    const justCreated = createdFolderId === node.id;
+    const [childrenMounted, setChildrenMounted] = useState(expanded && hasChildren);
+    const [childrenVisible, setChildrenVisible] = useState(expanded && hasChildren);
     const renaming = renamingId === node.id;
     const canCreateChild = node.depth + 1 < LIMITS.folderDepthMax;
+    useEffect(() => {
+        if (!hasChildren) {
+            setChildrenVisible(false);
+            setChildrenMounted(false);
+            return;
+        }
+        if (expanded) {
+            setChildrenMounted(true);
+            const openTimer = window.setTimeout(() => setChildrenVisible(true), 0);
+            return () => window.clearTimeout(openTimer);
+        }
+        setChildrenVisible(false);
+        const closeTimer = window.setTimeout(() => setChildrenMounted(false), 340);
+        return () => window.clearTimeout(closeTimer);
+    }, [expanded, hasChildren]);
     const rename = (name: string) => {
         const trimmed = name.trim();
         if (!trimmed || trimmed === node.name) {
@@ -455,7 +480,7 @@ function FolderRow({ node, siblings, index, parentNode, parentSiblings, onCreate
         { id: 'move-out', label: t("sidebar.move_out_one_level"), icon: <CornerUpLeft size={13}/>, disabled: !parentNode, onSelect: moveOut },
         { id: 'delete', label: t("sidebar.delete_folder"), icon: <Trash2 size={13}/>, tone: 'danger', separatorBefore: true, onSelect: () => void remove() },
     ];
-    return (<div role="treeitem" aria-level={node.depth + 1} aria-expanded={hasChildren ? expanded : undefined}>
+    return (<div role="treeitem" aria-level={node.depth + 1} aria-expanded={hasChildren ? expanded : undefined} className={cn(justCreated && 'anim-tree-item-enter')} data-new-folder={justCreated || undefined}>
       <div ref={buttonRef} onContextMenu={(event) => {
             setMenuOpen(false);
             menu.onContextMenu(event);
@@ -517,7 +542,7 @@ function FolderRow({ node, siblings, index, parentNode, parentSiblings, onCreate
         </Tooltip>
 
         <span className={cn('shrink-0', active && !node.color ? 'text-[var(--accent)]' : !node.color && 'text-[var(--text-tertiary)]')} style={{ color: node.color ?? undefined }}>
-          {node.icon ? (<span className="text-[13px] leading-none">{node.icon}</span>) : expanded && hasChildren ? (<FolderOpen size={14}/>) : (<FolderClosed size={14}/>)}
+          {node.icon ? (<span className={cn('text-[13px] leading-none', justCreated && 'anim-mark-enter')}>{node.icon}</span>) : (<FolderMotionIcon open={expanded && hasChildren} drawing={justCreated}/>)}
         </span>
 
         {renaming ? (<input aria-label={t("sidebar.rename")} autoFocus defaultValue={node.name} onBlur={(e) => void rename(e.target.value)} onKeyDown={(e) => {
@@ -550,13 +575,24 @@ function FolderRow({ node, siblings, index, parentNode, parentSiblings, onCreate
           </>)}
       </div>
 
-      {expanded && hasChildren && (<div role="group" className="space-y-px">
-          {node.children.map((child, childIndex) => (<FolderRow key={child.id} node={child} siblings={node.children} index={childIndex} parentNode={node} parentSiblings={siblings} onCreateChild={onCreateChild} onMove={onMove} onChooseParent={onChooseParent} onEditAppearance={onEditAppearance} renamingId={renamingId} onStartRename={onStartRename} onFinishRename={onFinishRename}/>))}
+      {childrenMounted && (<div role="group" aria-hidden={!childrenVisible} inert={!childrenVisible} className={cn('folder-children-grid', childrenVisible && 'is-expanded')}>
+          <div className="min-h-0 space-y-px overflow-hidden">
+            {node.children.map((child, childIndex) => (<FolderRow key={child.id} node={child} siblings={node.children} index={childIndex} parentNode={node} parentSiblings={siblings} onCreateChild={onCreateChild} onMove={onMove} onChooseParent={onChooseParent} onEditAppearance={onEditAppearance} createdFolderId={createdFolderId} renamingId={renamingId} onStartRename={onStartRename} onFinishRename={onFinishRename}/>))}
+          </div>
         </div>)}
 
       <Menu anchor={buttonRef} open={menuOpen} onClose={() => setMenuOpen(false)} items={menuItems}/>
       {menu.point && (<Menu anchor={menu.point} open onClose={menu.close} items={menuItems}/>)}
     </div>);
+}
+function FolderMotionIcon({ open, drawing }: {
+    open: boolean;
+    drawing: boolean;
+}) {
+    return (<span aria-hidden="true" data-open={open || undefined} data-drawing={drawing || undefined} className="folder-motion-icon">
+      <FolderClosed size={14} className="folder-motion-icon__closed"/>
+      <FolderOpen size={14} className="folder-motion-icon__open"/>
+    </span>);
 }
 function TagSection() {
     const tags = useNotes((s) => s.tags);

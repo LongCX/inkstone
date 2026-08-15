@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -37,7 +38,7 @@ export interface PreviewProps {
   className?: string
 }
 
-export function Preview({
+export const Preview = memo(function Preview({
   content,
   noteId,
   noteTitle,
@@ -374,7 +375,7 @@ export function Preview({
       />
     </div>
   )
-}
+})
 
 function scrollToWikiTarget(
   hostRef: RefObject<HTMLDivElement | null>,

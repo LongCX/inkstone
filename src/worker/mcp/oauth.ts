@@ -104,7 +104,10 @@ function providerForOrigin(origin: string, env: Env): OAuthProvider<Env> {
       await initializeDatabase(env)
       const auth = await verifyMcpApiKey(env.DB, token)
       if (!auth) return null
-      return { props: { userId: auth.userId, role: auth.role, scopes: auth.scopes } }
+      return {
+        props: { userId: auth.userId, role: auth.role, scopes: auth.scopes },
+        audience: mcpResource,
+      }
     },
     clientRegistrationCallback: async ({ request }) => {
       await initializeDatabase(env)

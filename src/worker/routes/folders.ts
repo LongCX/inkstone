@@ -527,7 +527,7 @@ async function normalizeSiblingPositions(
   }
 }
 
-async function folderPromotionOrder(
+export async function folderPromotionOrder(
   db: D1Database,
   userId: string,
   folder: { id: string; parent_id: string | null; position: number },

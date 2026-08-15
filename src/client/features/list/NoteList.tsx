@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArrowDownWideNarrow, CheckSquare2, Columns2, Copy, FileCode, FileDown, FileText, FolderInput, MoreHorizontal, Pin, PinOff, PanelLeft, Plus, RotateCcw, Search, Star, StarOff, Trash2, X, } from 'lucide-react';
 import type { NoteSummary, SortKey, ViewKind } from '@shared/types';
 import { cn } from '../../lib/cn';
@@ -50,6 +50,7 @@ export function NoteList() {
     const openNote = useNotes((s) => s.openNote);
     const { emptyTrash, emptyingTrash } = useEmptyTrash();
     const [filter, setFilter] = useState('');
+    const deferredFilter = useDeferredValue(filter);
     const [sortMenuOpen, setSortMenuOpen] = useState(false);
     const sortButtonRef = useRef<HTMLButtonElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
@@ -65,13 +66,13 @@ export function NoteList() {
         return t(VIEW_MESSAGE_KEYS[view]);
     }, [view, folderId, tag, folders, locale]);
     const filtered = useMemo(() => {
-        if (!filter.trim())
+        if (!deferredFilter.trim())
             return notes.map((note) => ({ note, ranges: EMPTY_HIGHLIGHT }));
-        return fuzzyFilter(notes, filter, (n) => `${n.title} ${n.excerpt}`, 200).map(({ item, match }) => ({
+        return fuzzyFilter(notes, deferredFilter, (n) => `${n.title} ${n.excerpt}`, 200).map(({ item, match }) => ({
             note: item,
             ranges: match.ranges.filter(([s]) => s < item.title.length),
         }));
-    }, [notes, filter]);
+    }, [notes, deferredFilter]);
     const filteredIds = useMemo(() => filtered.map((item) => item.note.id), [filtered]);
     const filteredIdsRef = useRef(filteredIds);
     filteredIdsRef.current = filteredIds;
@@ -82,7 +83,7 @@ export function NoteList() {
         listRef.current
             ?.querySelector<HTMLElement>(`[data-note-id="${activeNoteId}"]`)
             ?.scrollIntoView({ block: 'nearest' });
-    }, [activeNoteId]);
+    }, [activeNoteId, view, folderId, tag]);
     const onKeyDown = (event: React.KeyboardEvent) => {
         if (event.key === 'Escape') {
             useUi.getState().setSelected(activeNoteId ? [activeNoteId] : []);
@@ -194,7 +195,7 @@ export function NoteList() {
         {view === 'trash' && notes.length > 0 && (<button type="button" disabled={emptyingTrash} aria-busy={emptyingTrash} onClick={() => void emptyTrash()} className="mt-2 w-full rounded-[var(--r-md)] border border-[var(--border-subtle)] py-1.5 text-[11.5px] text-[var(--text-tertiary)] transition-colors hover:border-[var(--danger)] hover:text-[var(--danger)] disabled:pointer-events-none disabled:opacity-50">{t("notes.empty_trash")}{notes.length}{t("notes.notes_93aeb9")}</button>)}
       </header>
 
-      <div ref={listRef} role="listbox" aria-label={title} aria-multiselectable="true" aria-activedescendant={activeNoteId && filteredIds.includes(activeNoteId) ? `note-option-${activeNoteId}` : undefined} tabIndex={0} onKeyDown={onKeyDown} className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--accent)]">
+      <div key={`${view}:${folderId ?? ''}:${tag ?? ''}`} ref={listRef} role="listbox" aria-label={title} aria-multiselectable="true" aria-activedescendant={activeNoteId && filteredIds.includes(activeNoteId) ? `note-option-${activeNoteId}` : undefined} tabIndex={0} onKeyDown={onKeyDown} className="anim-view-content min-h-0 flex-1 overflow-y-auto px-2 pb-4 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--accent)]">
         {!hydrated && loading ? (<NoteListSkeleton />) : filtered.length === 0 ? (<ListEmpty view={view} filtering={Boolean(filter)}/>) : (groups.map((group) => (<div key={group.key} role="group" aria-label={group.label ?? title}>
               {group.label && (<div className="px-2 pt-3 pb-1 text-[10.5px] font-semibold tracking-[0.06em] text-[var(--text-quaternary)]">
                   {group.label}
@@ -383,7 +384,7 @@ const NoteRow = memo(function NoteRow({ note, highlight, density, tagColors, onR
         }} onContextMenu={(event) => {
             setMenuOpen(false);
             menu.onContextMenu(event);
-        }} className={cn('group relative cursor-default rounded-[var(--r-md)] border border-transparent px-2.5 pr-11 transition-[background-color,border-color,box-shadow] duration-[var(--dur-fast)] md:pr-10', density === 'compact' ? 'py-[7px]' : 'py-2.5', selectionHighlighted
+        }} className={cn('motion-note-row group relative cursor-default rounded-[var(--r-md)] border border-transparent px-2.5 pr-11 transition-[background-color,border-color,box-shadow,transform] duration-[var(--dur-fast)] md:pr-10', density === 'compact' ? 'py-[7px]' : 'py-2.5', selectionHighlighted
             ? 'bg-[var(--accent-soft)] ring-1 ring-[var(--accent)]/40'
             : active
                 ? 'border-[var(--border-default)] bg-[var(--bg-surface)] shadow-[var(--shadow-sm)]'
@@ -393,7 +394,7 @@ const NoteRow = memo(function NoteRow({ note, highlight, density, tagColors, onR
         <div className="flex items-start gap-1.5">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
-              {note.isPinned && <Pin size={10} className="shrink-0 text-[var(--accent)]"/>}
+              {note.isPinned && <Pin size={10} className="anim-mark-enter shrink-0 text-[var(--accent)]"/>}
               <h3 className={cn('min-w-0 flex-1 truncate text-[13px] leading-snug', active
             ? 'font-semibold text-[var(--accent)]'
             : 'font-medium text-[var(--text-primary)]')}>
@@ -401,7 +402,7 @@ const NoteRow = memo(function NoteRow({ note, highlight, density, tagColors, onR
                       {part.text}
                     </mark>) : (<span key={i}>{part.text}</span>))}
               </h3>
-              {note.isStarred && <Star size={10} className="shrink-0 fill-current text-[var(--warning)]"/>}
+              {note.isStarred && <Star size={10} className="anim-mark-enter shrink-0 fill-current text-[var(--warning)]"/>}
             </div>
 
             {density === 'comfortable' && note.excerpt && (<p className="truncate-2 mt-1 text-[11.5px] leading-[1.5] text-[var(--text-tertiary)]">

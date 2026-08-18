@@ -4,6 +4,7 @@ import { X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Button, IconButton, Kbd } from './primitives';
 import { t } from "../lib/i18n";
+import { getVisibleViewport } from '../lib/viewport';
 
 
 const escStack: (() => void)[] = [];
@@ -157,9 +158,9 @@ export function Modal({ open, onClose, title, description, children, footer, wid
     return createPortal(
 
 
-    <div className="fixed inset-0 z-[250] flex items-end justify-center overflow-hidden md:items-start md:overflow-y-auto md:p-8">
-      <div className="anim-fade fixed inset-0 bg-[var(--scrim)] backdrop-blur-[3px]" onClick={onClose} aria-hidden="true"/>
-      <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={title ? titleId : undefined} aria-describedby={description ? descriptionId : undefined} aria-label={title ? undefined : t("overlay.dialog")} tabIndex={-1} className={cn('anim-pop relative flex max-h-[calc(100dvh-env(safe-area-inset-top))] w-full flex-col rounded-t-[var(--r-2xl)] border border-b-0 border-[var(--border-default)]', 'bg-[var(--bg-overlay)] shadow-[var(--shadow-modal)] outline-none md:my-auto md:rounded-[var(--r-2xl)] md:border-b', className)} style={{ maxWidth: width }}>
+    <div className="app-viewport-fixed fixed z-[250] flex items-end justify-center overflow-hidden md:items-start md:overflow-y-auto md:p-8">
+      <div className="anim-fade absolute inset-0 bg-[var(--scrim)] backdrop-blur-[3px]" onClick={onClose} aria-hidden="true"/>
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={title ? titleId : undefined} aria-describedby={description ? descriptionId : undefined} aria-label={title ? undefined : t("overlay.dialog")} tabIndex={-1} className={cn('anim-pop relative flex max-h-[calc(var(--app-viewport-height,100dvh)-env(safe-area-inset-top))] w-full flex-col rounded-t-[var(--r-2xl)] border border-b-0 border-[var(--border-default)]', 'bg-[var(--bg-overlay)] shadow-[var(--shadow-modal)] outline-none md:my-auto md:rounded-[var(--r-2xl)] md:border-b', className)} style={{ maxWidth: width }}>
         {(title || description) && (<div className="flex shrink-0 items-start justify-between gap-4 px-4 pt-4 pb-3 md:px-5">
             <div className="min-w-0">
               {title && (<h2 id={titleId} className="text-[15px] font-semibold tracking-[-0.012em] text-[var(--text-primary)]">
@@ -302,10 +303,11 @@ export function Menu({ anchor, open, onClose, items, align = 'start', width = 20
             top = rect.bottom + 5;
             left = align === 'end' ? rect.right - menuWidth : rect.left;
         }
-        const flipUp = top + height > innerHeight - margin;
+        const viewport = getVisibleViewport();
+        const flipUp = top + height > viewport.bottom - margin;
         if (flipUp)
-            top = Math.max(margin, (point ? point.y : (anchorRef?.current?.getBoundingClientRect().top ?? top)) - height - 5);
-        left = Math.min(Math.max(margin, left), innerWidth - menuWidth - margin);
+            top = Math.max(viewport.top + margin, (point ? point.y : (anchorRef?.current?.getBoundingClientRect().top ?? top)) - height - 5);
+        left = Math.min(Math.max(viewport.left + margin, left), viewport.right - menuWidth - margin);
         setPosition({ top, left, origin: `${flipUp ? 'bottom' : 'top'} ${align === 'end' ? 'right' : 'left'}` });
         setCursor(items.findIndex((i) => !i.disabled));
     }, [open, items, align, menuWidth, anchorRef, point]);
@@ -497,23 +499,26 @@ interface TooltipPosition {
 function placeTooltip(anchor: DOMRect, tooltip: DOMRect, preferred: TooltipSide): TooltipPosition {
     const gap = 7;
     const padding = 8;
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
+    const viewport = getVisibleViewport();
+    const viewportLeft = viewport.left;
+    const viewportTop = viewport.top;
+    const viewportRight = viewport.right;
+    const viewportBottom = viewport.bottom;
     let side = preferred;
-    if (preferred === 'bottom' && anchor.bottom + gap + tooltip.height > viewportHeight - padding &&
-        (anchor.top - gap - tooltip.height >= padding || anchor.top > viewportHeight - anchor.bottom)) {
+    if (preferred === 'bottom' && anchor.bottom + gap + tooltip.height > viewportBottom - padding &&
+        (anchor.top - gap - tooltip.height >= viewportTop + padding || anchor.top - viewportTop > viewportBottom - anchor.bottom)) {
         side = 'top';
     }
-    else if (preferred === 'top' && anchor.top - gap - tooltip.height < padding &&
-        (anchor.bottom + gap + tooltip.height <= viewportHeight - padding || viewportHeight - anchor.bottom > anchor.top)) {
+    else if (preferred === 'top' && anchor.top - gap - tooltip.height < viewportTop + padding &&
+        (anchor.bottom + gap + tooltip.height <= viewportBottom - padding || viewportBottom - anchor.bottom > anchor.top - viewportTop)) {
         side = 'bottom';
     }
-    else if (preferred === 'right' && anchor.right + gap + tooltip.width > viewportWidth - padding &&
-        (anchor.left - gap - tooltip.width >= padding || anchor.left > viewportWidth - anchor.right)) {
+    else if (preferred === 'right' && anchor.right + gap + tooltip.width > viewportRight - padding &&
+        (anchor.left - gap - tooltip.width >= viewportLeft + padding || anchor.left - viewportLeft > viewportRight - anchor.right)) {
         side = 'left';
     }
-    else if (preferred === 'left' && anchor.left - gap - tooltip.width < padding &&
-        (anchor.right + gap + tooltip.width <= viewportWidth - padding || viewportWidth - anchor.right > anchor.left)) {
+    else if (preferred === 'left' && anchor.left - gap - tooltip.width < viewportLeft + padding &&
+        (anchor.right + gap + tooltip.width <= viewportRight - padding || viewportRight - anchor.right > anchor.left - viewportLeft)) {
         side = 'right';
     }
     const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), Math.max(min, max));
@@ -521,12 +526,12 @@ function placeTooltip(anchor: DOMRect, tooltip: DOMRect, preferred: TooltipSide)
         return {
             side,
             top: side === 'bottom' ? anchor.bottom + gap : anchor.top - gap - tooltip.height,
-            left: clamp(anchor.left + anchor.width / 2 - tooltip.width / 2, padding, viewportWidth - tooltip.width - padding),
+            left: clamp(anchor.left + anchor.width / 2 - tooltip.width / 2, viewportLeft + padding, viewportRight - tooltip.width - padding),
         };
     }
     return {
         side,
-        top: clamp(anchor.top + anchor.height / 2 - tooltip.height / 2, padding, viewportHeight - tooltip.height - padding),
+        top: clamp(anchor.top + anchor.height / 2 - tooltip.height / 2, viewportTop + padding, viewportBottom - tooltip.height - padding),
         left: side === 'right' ? anchor.right + gap : anchor.left - gap - tooltip.width,
     };
 }
@@ -546,7 +551,7 @@ export function Drawer({ open, onClose, side = 'right', width = 380, children, t
     useDialogFocus(open, panelRef);
     if (!open)
         return null;
-    return createPortal(<div className="fixed inset-0" style={{ zIndex }}>
+    return createPortal(<div className="app-viewport-fixed fixed" style={{ zIndex }}>
       <div className="anim-fade absolute inset-0 bg-[var(--scrim)]" onClick={onClose} aria-hidden="true"/>
       <aside ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={title ? titleId : undefined} aria-label={title ? undefined : t("overlay.side_panel")} tabIndex={-1} className={cn('absolute top-0 bottom-0 flex flex-col border-[var(--border-default)] bg-[var(--bg-surface)] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-modal)] outline-none md:py-0', side === 'right' ? 'right-0 border-l' : 'left-0 border-r')} style={{
             width: Math.min(width, window.innerWidth < 768 ? window.innerWidth : window.innerWidth - 32),

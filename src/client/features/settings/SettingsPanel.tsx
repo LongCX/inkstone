@@ -45,7 +45,7 @@ export function SettingsPanel({ onClose }: {
     useEffect(() => {
         bodyRef.current?.scrollTo({ top: 0 });
     }, [section]);
-    return createPortal(<div className="fixed inset-0 z-[210] flex items-center justify-center md:p-8">
+    return createPortal(<div className="app-viewport-fixed fixed z-[210] flex items-center justify-center md:p-8">
       <div className="anim-fade absolute inset-0 bg-[var(--scrim)] backdrop-blur-[3px]" onClick={onClose} aria-hidden="true"/>
 
       <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} className="anim-pop relative flex h-full w-full max-w-[880px] flex-col overflow-hidden bg-[var(--bg-overlay)] pt-[env(safe-area-inset-top)] shadow-[var(--shadow-modal)] outline-none md:max-h-[720px] md:flex-row md:rounded-[var(--r-2xl)] md:border md:border-[var(--border-default)] md:pt-0">

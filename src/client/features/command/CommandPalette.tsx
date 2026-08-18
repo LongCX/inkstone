@@ -399,10 +399,10 @@ export function CommandPalette({ onClose }: {
         }
     };
     let flatIndex = -1;
-    return createPortal(<div className="fixed inset-0 z-[240] flex items-end justify-center md:items-start md:px-4 md:pt-[13vh]">
+    return createPortal(<div className="app-viewport-fixed fixed z-[240] flex items-end justify-center md:items-start md:px-4 md:pt-[13vh]">
       <div className="anim-fade absolute inset-0 bg-[var(--scrim)] backdrop-blur-[3px]" onClick={onClose} aria-hidden="true"/>
 
-      <div ref={panelRef} className="anim-pop relative flex h-[82dvh] w-full max-w-[660px] flex-col overflow-hidden rounded-t-[var(--r-2xl)] border border-b-0 border-[var(--border-default)] bg-[var(--bg-overlay)] pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-modal)] outline-none md:h-auto md:rounded-[var(--r-2xl)] md:border-b md:pb-0" role="dialog" aria-modal="true" aria-labelledby={labelId} tabIndex={-1}>
+      <div ref={panelRef} className="anim-pop relative flex h-[min(82dvh,var(--app-viewport-height,100dvh))] w-full max-w-[660px] flex-col overflow-hidden rounded-t-[var(--r-2xl)] border border-b-0 border-[var(--border-default)] bg-[var(--bg-overlay)] pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-modal)] outline-none md:h-auto md:rounded-[var(--r-2xl)] md:border-b md:pb-0" role="dialog" aria-modal="true" aria-labelledby={labelId} tabIndex={-1}>
         <h2 id={labelId} className="sr-only">{t("common.search_notes_or_run_a_command")}</h2>
         <div className="flex items-center gap-2.5 border-b border-[var(--border-subtle)] px-4">
           <Search size={16} className="shrink-0 text-[var(--text-quaternary)]"/>

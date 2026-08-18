@@ -135,7 +135,7 @@ function MobileShell() {
             { id: 'preview' as const, icon: <Eye size={19}/>, label: t("common.preview") },
         ] : []),
     ];
-    return (<div className="relative flex h-full flex-col overflow-hidden bg-[var(--bg-base)] pt-[env(safe-area-inset-top)]">
+    return (<div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-[var(--bg-base)] pt-[env(safe-area-inset-top)]">
       <div className="relative min-h-0 flex-1">
         <div aria-hidden={pane !== 'nav'} inert={pane !== 'nav'} data-active={pane === 'nav' || undefined} className="mobile-pane-layer absolute inset-0">
           <Sidebar onCollapse={() => setPane('list')}/>

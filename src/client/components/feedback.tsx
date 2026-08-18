@@ -69,7 +69,7 @@ export function Toaster() {
     const toasts = useUi((s) => s.toasts);
     if (typeof document === 'undefined')
         return null;
-    return createPortal(<div className="pointer-events-none fixed right-2 bottom-[calc(64px+env(safe-area-inset-bottom))] z-[400] flex flex-col items-end gap-2 md:right-4 md:bottom-4">
+    return createPortal(<div className="app-viewport-toaster pointer-events-none fixed right-2 bottom-[calc(64px+env(safe-area-inset-bottom))] z-[400] flex flex-col items-end gap-2 md:right-4 md:bottom-4">
       {toasts.map((item) => (<Toast key={item.id} item={item}/>))}
     </div>, document.body);
 }

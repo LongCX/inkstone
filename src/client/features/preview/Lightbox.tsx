@@ -33,7 +33,7 @@ export function Lightbox() {
     }, [lightbox]);
     if (!lightbox)
         return null;
-    return createPortal(<div ref={panelRef} role="dialog" aria-modal="true" aria-label={t("preview.image_preview")} tabIndex={-1} className="anim-fade fixed inset-0 z-[260] flex items-center justify-center bg-[oklch(0%_0_0/78%)] backdrop-blur-[2px] outline-none" onClick={close}>
+    return createPortal(<div ref={panelRef} role="dialog" aria-modal="true" aria-label={t("preview.image_preview")} tabIndex={-1} className="app-viewport-fixed anim-fade fixed z-[260] flex items-center justify-center bg-[oklch(0%_0_0/78%)] backdrop-blur-[2px] outline-none" onClick={close}>
       <div className="absolute top-[calc(12px+env(safe-area-inset-top))] right-2 flex items-center gap-1 md:top-4 md:right-4" onClick={(e) => e.stopPropagation()}>
         <Tooltip label={t("common.zoom_out")} side="bottom">
           <IconButton label={t("common.zoom_out")} disabled={failed || scale <= 0.3} onClick={() => setScale((s) => Math.max(0.3, s - 0.25))} className="text-white/70 hover:bg-white/10 hover:text-white">
